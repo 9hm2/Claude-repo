@@ -86,4 +86,34 @@ struct usbip_header {
     } u;
 } __attribute__((packed));
 
+/*
+ * PDU I/O helperek (usbip_proto.c).
+ * Mind szigorúan partial-read/write biztosak. Konverzió: ntohl/htonl
+ * a fields-re, kivéve `setup[]`-ot a control transfer setup-packet.
+ */
+#include <stddef.h>
+#include <sys/types.h>
+
+ssize_t usbip_read_all(int fd, void *buf, size_t len);
+ssize_t usbip_write_all(int fd, const void *buf, size_t len);
+
+/* basic header beolvasása: 1 = ok, 0 = EOF, <0 = -errno */
+int usbip_read_basic(int fd, struct usbip_header_basic *out);
+
+int usbip_read_cmd_submit(int fd, struct usbip_header_cmd_submit *out);
+int usbip_read_cmd_unlink(int fd, struct usbip_header_cmd_unlink *out);
+
+int usbip_write_ret_submit(int fd,
+                           uint32_t seqnum, uint32_t devid,
+                           uint32_t direction, uint32_t ep,
+                           int32_t status, int32_t actual_length,
+                           int32_t start_frame, int32_t number_of_packets,
+                           int32_t error_count,
+                           const void *in_payload, size_t in_payload_len);
+
+int usbip_write_ret_unlink(int fd,
+                           uint32_t seqnum, uint32_t devid,
+                           uint32_t direction, uint32_t ep,
+                           int32_t status);
+
 #endif /* KALITERM_USBIP_PROTO_H */

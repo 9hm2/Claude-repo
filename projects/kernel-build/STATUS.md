@@ -51,7 +51,7 @@ CI feltölti.
 **Fázis 0 lezárva**: ✅ mindkét architektúra zöldül a CI-ban, az artifact-ok
 elérhetők. (`liblkl-host-lib.so` + `lklfuse`, `cptofs`, `cpfromfs`.)
 
-## Fázis 1a — USB stack bekapcsolva (in progress)
+## Fázis 1a — USB stack bekapcsolva (✅)
 
 **Megközelítés**: nem írunk saját HCD driver-t. Helyette bekapcsoljuk a már
 létező mainline **`vhci_hcd` (USB/IP)** driver-t, ami pontosan arra való,
@@ -66,9 +66,22 @@ Az LKL kernelbe bekerülő driver-készlet ezzel a commit-tal:
 | `drivers/usb/serial/{ftdi_sio,ch341,cp210x,pl2303}.c` | USB serial smoke test |
 | `drivers/hid/usbhid/*`, `drivers/hid/hid-generic.c` | USB HID smoke test |
 
-A host oldalt (`projects/usb-bridge/`) a következő commit hozza:
-USB/IP-protokoll-beszélő Unix-socket szerver → libusb → Android UsbManager FD.
+A host oldal (`projects/usb-bridge/`) **Fázis 1b + 1c** alatt kész:
+- Unix socket szerver, SCM_RIGHTS-szal érkező USB fd, `libusb_wrap_sys_device`.
+- Teljes USB/IP wire loop: CMD_SUBMIT/CMD_UNLINK pdu-kat libusb async
+  control/bulk/interrupt transfer-ekké fordítunk; completion-ök RET_SUBMIT
+  pdu-kban mennek vissza a `vhci_hcd`-nek. Részletek:
+  `projects/usb-bridge/README.md`.
 
-A következő fázisban (Fázis 1) jön az **USB host shim** — a `tools/lkl/`
-extensible host-interfészen keresztül az Android UsbManager FD-t bedrótozzuk
-a kernel USB stack-jébe, hogy a Linux USB drivere lássa a fizikai eszközt.
+## Fázis 2 (következő) — end-to-end összekötés
+
+A `vhci_hcd` és a `kaliterm-usb-bridge` most még külön él. A következő
+lépés a két socket-vég összekötése egy első Android NDK build keretében:
+1. `kali-term-app` JNI-ben elindítjuk az `liblkl-host-lib.so`-t,
+   és `vhci_hcd`-t a `usbip_sockfd_store` sysfs attribútumon keresztül
+   attach-oljuk az általunk megnyitott socket-pair egyik végéhez.
+2. A másik végét odaadjuk a `kaliterm-usb-bridge`-nek (vagy beágyazva
+   ugyanabba a processzbe egy thread-en, vagy spawn-olt daemon-ként).
+3. Az UsbManager-től kapott USB fd-t SCM_RIGHTS-szal átadjuk a bridge-nek.
+4. Mostantól a Kali shell-ből `lsusb` látja az eszközt, és pl. a `ftdi_sio`
+   driver bind-eli, létrejön `/dev/ttyUSB0`.

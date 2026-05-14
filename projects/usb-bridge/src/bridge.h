@@ -22,6 +22,10 @@ typedef struct bridge_ctx {
     volatile int          stopping;
 } bridge_ctx_t;
 
+/* A session-en belüli dispatch-állapot előre deklarálása — a részletek
+ * a usb_dispatch.c-ben élnek (transfer table, mutexek, event thread). */
+struct bridge_dispatch;
+
 /*
  * Per-kapcsolat (per-eszköz) állapot. Egy munkaszál (vagy worker) tartja
  * fenn. A libusb handle a hozzá tartozó vhci-csatornán átküldött URB-eket
@@ -33,6 +37,7 @@ typedef struct bridge_session {
     int                            usb_fd;        /* az UsbManager-től kapott fd */
     struct libusb_device_handle   *usb_handle;    /* libusb_wrap_sys_device-szal */
     uint32_t                       devid;         /* USB/IP devid (busnum<<16 | devnum) */
+    struct bridge_dispatch        *dispatch;      /* a session URB-loop állapota */
 } bridge_session_t;
 
 /* socket_server.c */

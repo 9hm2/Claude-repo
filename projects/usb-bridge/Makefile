@@ -14,14 +14,14 @@ PKG_CONFIG ?= pkg-config
 CFLAGS  ?= -O2 -g
 WARNINGS = -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes \
            -Wmissing-prototypes -Wno-unused-parameter
-STD      = -std=c11 -D_GNU_SOURCE
+STD      = -std=c11
 DEFINES  =
 
 LIBUSB_CFLAGS := $(shell $(PKG_CONFIG) --cflags libusb-1.0)
 LIBUSB_LIBS   := $(shell $(PKG_CONFIG) --libs   libusb-1.0)
 
-ALL_CFLAGS  = $(STD) $(WARNINGS) $(DEFINES) $(CFLAGS) $(LIBUSB_CFLAGS)
-ALL_LDFLAGS = $(LDFLAGS)
+ALL_CFLAGS  = $(STD) $(WARNINGS) $(DEFINES) $(CFLAGS) $(LIBUSB_CFLAGS) -pthread
+ALL_LDFLAGS = $(LDFLAGS) -pthread
 ALL_LDLIBS  = $(LIBUSB_LIBS) $(LDLIBS)
 
 OUT_DIR ?= out
