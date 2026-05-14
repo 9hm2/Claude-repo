@@ -26,9 +26,16 @@ case "${SUBARCH}" in
       echo "[build] HIBA: nincs aarch64-linux-android24-clang itt: ${NDK_BIN}" >&2
       exit 3
     fi
-    # NDK clang nem prefixelt nevek — minden tool explicit megadva.
-    # ARCH=lkl marad; csak a HOST-toolchain változik (Bionic-ARM64).
+    # LLVM=1 + CROSS_COMPILE=aarch64-linux-android-:
+    #   az kbuild `scripts/Makefile.clang` ebből deríti a target triple-t.
+    #   Az LLVM=1 jelzi hogy minden tool llvm-* (prefix nélkül); az explicit
+    #   AR/LD/NM/STRIP/OBJCOPY megadás felülírja az auto-detect-et.
+    #   Az NDK clang wrapper (aarch64-linux-android24-clang) saját --target=
+    #   flag-je később jön a parancssorban, így overrideolja a kbuild által
+    #   hozzáadott --target=aarch64-linux-android-et (utolsó wins).
     EXTRA_ARGS+=(
+      "LLVM=1"
+      "CROSS_COMPILE=aarch64-linux-android-"
       "CC=${NDK_BIN}/aarch64-linux-android24-clang"
       "HOSTCC=cc"
       "AR=${NDK_BIN}/llvm-ar"

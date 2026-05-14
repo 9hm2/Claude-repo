@@ -23,7 +23,15 @@ MAKE_EXTRA=()
 if [[ "${SUBARCH}" == "android-arm64" ]]; then
   : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME nincs beállítva (NDK install path)}"
   NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+  # LLVM=1 → kbuild llvm tool-okat keres (llvm-ar, ld.lld, stb.) prefix nélkül,
+  # az explicit AR/LD/... megadás felülírja.
+  # CROSS_COMPILE → csak a `--target=` triple derivációja miatt kell;
+  # a tool-prefix nem létezik az NDK-ban, az LLVM=1 ezt rendben kezeli.
+  # Az NDK clang wrapper (`aarch64-linux-android24-clang`) saját --target=...android24
+  # flag-et ad, ami az utolsó wins szabály miatt felülírja a kbuild-ét.
   MAKE_EXTRA+=(
+    "LLVM=1"
+    "CROSS_COMPILE=aarch64-linux-android-"
     "CC=${NDK_BIN}/aarch64-linux-android24-clang"
     "HOSTCC=cc"
     "AR=${NDK_BIN}/llvm-ar"
