@@ -73,6 +73,37 @@ A host oldal (`projects/usb-bridge/`) **Fázis 1b + 1c** alatt kész:
   pdu-kban mennek vissza a `vhci_hcd`-nek. Részletek:
   `projects/usb-bridge/README.md`.
 
+## ⚠️ Phase 2c blokkoló: Android NDK / Bionic LKL build
+
+A jelen `kernel.yml` glibc-targetelt LKL-t épít (`aarch64-linux-gnu-gcc`
++ `libc6-dev-arm64-cross`). A kimeneti `liblkl-host-lib.so` az
+**Ubuntu/Debian ARM64 glibc-re hivatkozik** — ezt az Android Bionic
+loader nem tudja betölteni, mert a libc-szimbólumkészletek és ABI
+inkompatibilisek.
+
+A kali-term-app jniLibs-jébe **Bionic-targetelt** változat kell.
+Három járható út:
+
+| Opció | Lényeg | Költség |
+| --- | --- | --- |
+| **A — új CI job** | `kernel.yml` mellé egy `LKL build (android arm64)` job az NDK clang toolchain-nel; külön artifact: `lkl-android-arm64` | Egy új workflow-step, +~10 perc CI |
+| B — app build-időben | `kali-term-app` CMake `ExternalProject_Add`-del a kbuild Make-jét hívja NDK toolchainnel | Minden app build +10–15 perc |
+| C — külön workflow | `lkl-android.yml` csak ezt csinálja | Több infrastruktúra, ordering issue-k |
+
+**A** az ajánlott — `kernel-build` mint a kernel-source-of-truth marad,
+csak egy újabb target/job. A `kali-term-app` CI letölti a most már
+megjelenő `lkl-android-arm64` artifact-ot és berakja a `jniLibs/arm64-v8a/`
+alá.
+
+### Konkrét hatás (Phase 2c.1 — most)
+
+A `kali-term-app` Phase 2c.1-ben **API-szinten előkészítve** van:
+- `nativeLklStatus / nativeLklStart / nativeLklStop` JNI metódusok
+- `dlsym(RTLD_DEFAULT, ...)` alapú symbol resolution — graceful degrade
+- UI mutatja: `LKL — UNAVAILABLE` (jelenleg), `LOADED`, vagy `RUNNING`
+- Amint a Bionic-build .so megérkezik a jniLibs alá, a státusz
+  automatikusan átvált; semmi más kódváltozás nem kell.
+
 ## Fázis 2 (következő) — end-to-end összekötés
 
 A `vhci_hcd` és a `kaliterm-usb-bridge` most még külön él. A következő

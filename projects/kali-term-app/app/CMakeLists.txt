@@ -73,6 +73,7 @@ set(USB_BRIDGE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../usb-bridge/src")
 
 add_library(kaliterm_native SHARED
     src/main/cpp/kaliterm_jni.c
+    src/main/cpp/lkl_runtime.c
     # usb-bridge — embedded:
     ${USB_BRIDGE_SRC}/usb_dispatch.c
     ${USB_BRIDGE_SRC}/usbip_proto.c

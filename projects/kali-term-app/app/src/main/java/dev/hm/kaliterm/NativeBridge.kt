@@ -12,6 +12,24 @@ package dev.hm.kaliterm
  */
 object NativeBridge {
 
+    /**
+     * Igaz, ha a `liblkl-host-lib.so` az APK-ban benne van és Android
+     * sikeresen be tudja tölteni a kaliterm_native előtt. (A `init` blokk
+     * sorrendje fontos: az LKL .so a kaliterm_native előtt kell.)
+     *
+     * Ha hamis, a Phase 2c JNI metódusai `-ENOENT` hibakóddal térnek vissza
+     * és a UI is jelzi hogy az LKL nem elérhető.
+     */
+    @JvmField
+    val lklLibraryLoaded: Boolean = run {
+        try {
+            System.loadLibrary("lkl-host-lib")
+            true
+        } catch (_: UnsatisfiedLinkError) {
+            false
+        }
+    }
+
     init {
         System.loadLibrary("kaliterm_native")
     }
@@ -63,4 +81,21 @@ object NativeBridge {
      *   "RUNNING vid=… pid=… devid=… peer_sock=…"
      */
     external fun nativeBridgeStatus(): String
+
+    /* ── Phase 2c — LKL runtime ─────────────────────────────────────── */
+
+    /**
+     * Az LKL .so jelenléte és resolve-állapota (`lkl_start_kernel`,
+     * `lkl_host_ops`, stb. dlsym-mel feloldva).
+     */
+    external fun nativeLklStatus(): String
+
+    /**
+     * `lkl_start_kernel(lkl_host_ops, "mem=64M loglevel=8")` meghívása.
+     * Visszaadás: 0 = ok, `-ENOENT` = nincs LKL .so, `-EALREADY` = már fut.
+     */
+    external fun nativeLklStart(): Int
+
+    /** `lkl_sys_halt()` — tisztán leállítja a futó LKL kernelt. */
+    external fun nativeLklStop(): Int
 }

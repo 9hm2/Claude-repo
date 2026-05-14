@@ -29,6 +29,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -68,6 +70,10 @@ fun Home(modifier: Modifier = Modifier) {
     val lastDesc by controller.lastDescription
     val bridgeStatus by controller.bridgeStatus
     val activeBridgeId by controller.activeBridgeDeviceId
+    val lklStatus = remember { mutableStateOf(runCatching { NativeBridge.nativeLklStatus() }.getOrDefault("?")) }
+    fun refreshLkl() {
+        lklStatus.value = runCatching { NativeBridge.nativeLklStatus() }.getOrDefault("?")
+    }
 
     Column(
         modifier = modifier,
@@ -93,6 +99,21 @@ fun Home(modifier: Modifier = Modifier) {
         )
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        // LKL állapot-panel.
+        LklStatusBar(
+            status = lklStatus.value,
+            libraryLoaded = NativeBridge.lklLibraryLoaded,
+            onStart = {
+                NativeBridge.nativeLklStart()
+                refreshLkl()
+            },
+            onStop = {
+                NativeBridge.nativeLklStop()
+                refreshLkl()
+            },
+            onRefresh = { refreshLkl() },
+        )
 
         // Bridge állapot-panel.
         BridgeStatusBar(
@@ -197,6 +218,75 @@ private fun BridgeStatusBar(
                 if (running) {
                     OutlinedButton(onClick = onStop) { Text("Stop") }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LklStatusBar(
+    status: String,
+    libraryLoaded: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val running = status.contains("running = YES")
+    val available = status.startsWith("AVAILABLE")
+    val color = when {
+        running   -> MaterialTheme.colorScheme.tertiaryContainer
+        available -> MaterialTheme.colorScheme.secondaryContainer
+        else      -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = color),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = when {
+                        running   -> "LKL — RUNNING"
+                        available -> "LKL — LOADED"
+                        else      -> "LKL — UNAVAILABLE"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        clipboard.setText(AnnotatedString(status))
+                    }) { Text("Másol") }
+                    OutlinedButton(onClick = onRefresh) { Text("Frissít") }
+                    if (running) {
+                        Button(onClick = onStop) { Text("Halt") }
+                    } else if (available) {
+                        Button(onClick = onStart) { Text("Start") }
+                    }
+                }
+            }
+            SelectionContainer {
+                Text(
+                    text = status + if (!libraryLoaded)
+                            "\n(System.loadLibrary(\"lkl-host-lib\") sikertelen — .so nincs az APK-ban)"
+                        else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 160.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
             }
         }
     }
