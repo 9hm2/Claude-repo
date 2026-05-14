@@ -2,6 +2,7 @@ name: Kernel (UML) build
 
 on:
   push:
+    branches: [main]
     paths:
       - 'projects/kernel-build/**'
       - '.github/workflows/kernel.yml'
