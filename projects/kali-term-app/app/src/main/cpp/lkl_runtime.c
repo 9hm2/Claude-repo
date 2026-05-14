@@ -50,6 +50,8 @@ static struct {
     int             resolved;        /* dlsym próbálta-e már */
     int             available;       /* lkl_init + start_kernel + host_ops megvolt-e */
     int             running;         /* lkl_init + lkl_start_kernel sikerült-e */
+    int             terminated;      /* halt+cleanup után — re-start a kernelben
+                                        upstream NEM támogatott, app-restart kell */
     void           *dl_handle;       /* dlopen("liblkl.so") visszaértéke */
     fn_lkl_init         init_fn;
     fn_lkl_start_kernel start_kernel;
@@ -144,9 +146,13 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStatus(JNIEnv *env, jobject thiz)
 {
     pthread_mutex_lock(&g_lkl.lock);
     lkl_resolve_locked();
+    const char *running_state =
+        g_lkl.terminated ? "TERMINATED (app-restart kell)" :
+        g_lkl.running    ? "YES"                            :
+                           "no";
     char out[1280];
     snprintf(out, sizeof(out), "%s\nrunning = %s",
-             g_lkl.status_buf, g_lkl.running ? "YES" : "no");
+             g_lkl.status_buf, running_state);
     pthread_mutex_unlock(&g_lkl.lock);
     return (*env)->NewStringUTF(env, out);
 }
@@ -163,6 +169,15 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStart(JNIEnv *env, jobject thiz)
     if (g_lkl.running) {
         pthread_mutex_unlock(&g_lkl.lock);
         return -EALREADY;
+    }
+    if (g_lkl.terminated) {
+        /* Az LKL kernel egyetlen processzben one-shot: a `lkl_sys_halt` +
+         * `lkl_cleanup` után a globális kernel state irreverzibilisen
+         * shutdown. Új lkl_init/lkl_start_kernel valószínűleg crash.
+         * Megakadályozzuk a re-start próbát — a UI kéri az app-restart-ot. */
+        pthread_mutex_unlock(&g_lkl.lock);
+        LOGW("lkl re-start blokkolva: a kernel már termin­álva (app-restart kell)");
+        return -EHOSTDOWN;
     }
 
     /* Új LKL API: lkl_init(host_ops) → lkl_start_kernel(cmd_line) */
@@ -196,12 +211,26 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStop(JNIEnv *env, jobject thiz)
     }
     if (!g_lkl.sys_halt) {
         g_lkl.running = 0;
+        g_lkl.terminated = 1;
         pthread_mutex_unlock(&g_lkl.lock);
         return -ENOSYS;
     }
     long rc = g_lkl.sys_halt();
-    g_lkl.running = 0;
-    pthread_mutex_unlock(&g_lkl.lock);
     LOGI("lkl_sys_halt rc=%ld", rc);
+    /* `lkl_cleanup` az LKL docs szerint a halt utáni tisztogatáshoz —
+     * KASAN, host-allokált struct-ok stb. (best-effort). */
+    if (g_lkl.cleanup_fn) {
+        g_lkl.cleanup_fn();
+        LOGI("lkl_cleanup hívva");
+    }
+    g_lkl.running = 0;
+    /* Az LKL kernel a halt + cleanup után IRREVERZIBILIS shutdown state-ben
+     * van. Új lkl_init/lkl_start_kernel hívás ugyanezen processzben
+     * upstream NEM támogatott — kernel-globális struct-ok (cmd_line buffer,
+     * percpu, IRQ state) reset nélkül maradnak, második start crash-eli az
+     * appot. Ezért terminated flag-et állítunk; nativeLklStart -EHOSTDOWN-t
+     * ad, a UI kéri az app-restart-ot. */
+    g_lkl.terminated = 1;
+    pthread_mutex_unlock(&g_lkl.lock);
     return (jint)rc;
 }

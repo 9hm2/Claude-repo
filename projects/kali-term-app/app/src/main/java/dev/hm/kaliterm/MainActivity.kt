@@ -232,12 +232,14 @@ private fun LklStatusBar(
     onRefresh: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
-    val running = status.contains("running = YES")
-    val available = status.startsWith("AVAILABLE")
+    val running    = status.contains("running = YES")
+    val terminated = status.contains("running = TERMINATED")
+    val available  = status.startsWith("AVAILABLE")
     val color = when {
-        running   -> MaterialTheme.colorScheme.tertiaryContainer
-        available -> MaterialTheme.colorScheme.secondaryContainer
-        else      -> MaterialTheme.colorScheme.surfaceVariant
+        running    -> MaterialTheme.colorScheme.tertiaryContainer
+        terminated -> MaterialTheme.colorScheme.errorContainer
+        available  -> MaterialTheme.colorScheme.secondaryContainer
+        else       -> MaterialTheme.colorScheme.surfaceVariant
     }
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -256,9 +258,10 @@ private fun LklStatusBar(
             ) {
                 Text(
                     text = when {
-                        running   -> "LKL — RUNNING"
-                        available -> "LKL — LOADED"
-                        else      -> "LKL — UNAVAILABLE"
+                        running    -> "LKL — RUNNING"
+                        terminated -> "LKL — TERMINATED (app-restart kell)"
+                        available  -> "LKL — LOADED"
+                        else       -> "LKL — UNAVAILABLE"
                     },
                     style = MaterialTheme.typography.titleSmall,
                 )
@@ -269,7 +272,7 @@ private fun LklStatusBar(
                     OutlinedButton(onClick = onRefresh) { Text("Frissít") }
                     if (running) {
                         Button(onClick = onStop) { Text("Halt") }
-                    } else if (available) {
+                    } else if (available && !terminated) {
                         Button(onClick = onStart) { Text("Start") }
                     }
                 }
