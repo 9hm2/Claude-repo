@@ -22,15 +22,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(libusb_src)
 
-set(LIBUSB_DIR        "${libusb_src_SOURCE_DIR}/libusb")
-set(LIBUSB_CONFIG_DIR "${CMAKE_CURRENT_BINARY_DIR}/libusb-config")
-file(MAKE_DIRECTORY "${LIBUSB_CONFIG_DIR}")
-
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/libusb-config.h.in"
-    "${LIBUSB_CONFIG_DIR}/config.h"
-    @ONLY
-)
+set(LIBUSB_DIR         "${libusb_src_SOURCE_DIR}/libusb")
+# Az upstream libusb karbantartja a saját Android config.h-ját — közvetlen
+# használjuk, nem írunk sajátot. Tartalmazza pl. PRINTF_FORMAT, ENABLE_LOGGING,
+# HAVE_PIPE2, HAVE_CLOCK_GETTIME stb. — mind upstream-validált Android-ra.
+set(LIBUSB_ANDROID_DIR "${libusb_src_SOURCE_DIR}/android")
 
 # libusb-nek nincs upstream CMake build-je v1.0.27-ben — magunknak
 # rakjuk össze a forrásfájlokat egy statikus library-be. A lista pontos
@@ -50,7 +46,7 @@ add_library(usb1_static STATIC
 target_include_directories(usb1_static
     PUBLIC  "${LIBUSB_DIR}"
     PRIVATE "${LIBUSB_DIR}/os"
-    PRIVATE "${LIBUSB_CONFIG_DIR}"
+    PRIVATE "${LIBUSB_ANDROID_DIR}"  # upstream config.h-t innen veszi
 )
 target_compile_definitions(usb1_static PRIVATE
     HAVE_CONFIG_H
