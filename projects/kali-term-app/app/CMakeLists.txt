@@ -64,8 +64,22 @@ target_compile_options(usb1_static PRIVATE
 set_property(TARGET usb1_static PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 # ── libkaliterm_native.so ─────────────────────────────────────────────
+#
+# Tartalmazza a JNI rétegünket + a `projects/usb-bridge/` URB-dispatch
+# kódját. Az utóbbi források egy ARM64 ELF-be kerülnek be — pontosan az,
+# ami a vhci_hcd-vel kommunikálva URB-eket lebonyolít majd.
+
+set(USB_BRIDGE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../usb-bridge/src")
+
 add_library(kaliterm_native SHARED
     src/main/cpp/kaliterm_jni.c
+    # usb-bridge — embedded:
+    ${USB_BRIDGE_SRC}/usb_dispatch.c
+    ${USB_BRIDGE_SRC}/usbip_proto.c
+)
+
+target_include_directories(kaliterm_native PRIVATE
+    ${USB_BRIDGE_SRC}
 )
 
 find_library(log-lib log)

@@ -53,6 +53,19 @@ class UsbController(private val context: Context) {
     /** Az utolsó natív rétegtől visszakapott descriptor-diagnosztika, UI-ban mutatva. */
     val lastDescription = mutableStateOf<String?>(null)
 
+    /** Ha fut a bridge, ennek az eszköznek a deviceId-je. Null = nem fut. */
+    val activeBridgeDeviceId = mutableStateOf<Int?>(null)
+
+    /** Friss `nativeBridgeStatus()` érték — Compose recompose-ra is használjuk. */
+    val bridgeStatus = mutableStateOf("STOPPED")
+
+    /**
+     * A `UsbDeviceConnection` referenciát fenn kell tartanunk, amíg a bridge
+     * fut — különben a GC bezárná, és az Android USB stack elengedné az
+     * eszközt a libusb dup'd fd-je alól.
+     */
+    private var activeConnection: UsbDeviceConnection? = null
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
             // Bármilyen USB esemény után újraszámoljuk a teljes listát —
@@ -99,12 +112,9 @@ class UsbController(private val context: Context) {
     }
 
     /**
-     * UsbManager-rel megnyitja az eszközt, kihúzza az fd-t, és átadja a
-     * natív bridge-nek. Az fd ownership a natív oldalé lesz —
-     * `conn` referenciát nem zárjuk explicit, de garbage collector eldobja.
-     *
-     * Visszaad: a natív hívás eredménye (0 = ok, < 0 = hiba), vagy
-     * negatív kódot ha nem sikerült megnyitni.
+     * Diagnosztikai probe — `nativeAcceptUsbDevice` libusb_wrap_sys_device-szal
+     * leolvassa a descriptor-okat, majd elenged mindent. A bridge NEM marad
+     * fent. Az eredmény logcat-ben és az UI `lastDescription` mezőjében.
      */
     fun attachToBridge(state: UsbDeviceState): Int {
         if (!state.granted) return -1
@@ -126,9 +136,51 @@ class UsbController(private val context: Context) {
         )
         lastDescription.value = runCatching { NativeBridge.nativeLastDescription() }
             .getOrElse { "(natív rétegtől nem jött descriptor: ${it.message})" }
-        // Frissítjük az UI-állapotot.
+        conn.close()
         val idx = devices.indexOfFirst { it.device.deviceId == state.device.deviceId }
         if (idx >= 0) devices[idx] = state.copy(attached = (rc >= 0))
+        return rc
+    }
+
+    /**
+     * Beindítja a usb-bridge URB-dispatch worker-szálát erre az eszközre.
+     * A `UsbDeviceConnection`-t megőrizzük amíg a bridge fut — így az
+     * Android USB stack nem engedi el az eszközt.
+     */
+    fun startBridge(state: UsbDeviceState): Int {
+        if (!state.granted) return -1
+        if (activeBridgeDeviceId.value != null) return -16  // EBUSY
+        val conn = usbManager.openDevice(state.device) ?: return -2
+        val fd = conn.fileDescriptor
+        if (fd < 0) { conn.close(); return -3 }
+
+        val rc = NativeBridge.nativeStartBridge(
+            fd = fd,
+            vid = state.device.vendorId,
+            pid = state.device.productId,
+            busnum = state.device.deviceId ushr 16,
+            devnum = state.device.deviceId and 0xFFFF,
+        )
+        if (rc < 0) {
+            conn.close()
+        } else {
+            activeConnection = conn
+            activeBridgeDeviceId.value = state.device.deviceId
+        }
+        bridgeStatus.value = runCatching { NativeBridge.nativeBridgeStatus() }
+            .getOrDefault("UNKNOWN")
+        lastDescription.value = runCatching { NativeBridge.nativeLastDescription() }
+            .getOrElse { "(natív descriptor: ${it.message})" }
+        return rc
+    }
+
+    fun stopBridge(): Int {
+        val rc = runCatching { NativeBridge.nativeStopBridge() }.getOrDefault(-1)
+        activeConnection?.close()
+        activeConnection = null
+        activeBridgeDeviceId.value = null
+        bridgeStatus.value = runCatching { NativeBridge.nativeBridgeStatus() }
+            .getOrDefault("UNKNOWN")
         return rc
     }
 }

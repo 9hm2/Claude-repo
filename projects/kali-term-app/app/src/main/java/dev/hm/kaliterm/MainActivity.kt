@@ -62,6 +62,8 @@ fun Home(modifier: Modifier = Modifier) {
     val controller = rememberUsbController()
     val lastLog by controller.lastAttachLog
     val lastDesc by controller.lastDescription
+    val bridgeStatus by controller.bridgeStatus
+    val activeBridgeId by controller.activeBridgeDeviceId
 
     Column(
         modifier = modifier,
@@ -87,6 +89,13 @@ fun Home(modifier: Modifier = Modifier) {
         )
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        // Bridge állapot-panel.
+        BridgeStatusBar(
+            status = bridgeStatus,
+            running = activeBridgeId != null,
+            onStop = { controller.stopBridge() },
+        )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -149,10 +158,16 @@ fun Home(modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(controller.devices, key = { it.device.deviceId }) { state ->
+                    val isThisBridged = activeBridgeId == state.device.deviceId
+                    val otherBridgeRunning = activeBridgeId != null && !isThisBridged
                     UsbDeviceCard(
                         state = state,
+                        bridgeOnThisDevice = isThisBridged,
+                        otherBridgeBlocking = otherBridgeRunning,
                         onRequestPermission = { controller.requestPermission(state) },
-                        onAttach = { controller.attachToBridge(state) },
+                        onProbe = { controller.attachToBridge(state) },
+                        onStartBridge = { controller.startBridge(state) },
+                        onStopBridge = { controller.stopBridge() },
                     )
                 }
             }
@@ -161,15 +176,59 @@ fun Home(modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun BridgeStatusBar(
+    status: String,
+    running: Boolean,
+    onStop: () -> Unit,
+) {
+    val color = if (running) MaterialTheme.colorScheme.tertiaryContainer
+                else          MaterialTheme.colorScheme.surfaceVariant
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = color),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (running) "Bridge — RUNNING" else "Bridge — STOPPED",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            if (running) {
+                OutlinedButton(onClick = onStop) { Text("Stop") }
+            }
+        }
+    }
+}
+
+@Composable
 private fun UsbDeviceCard(
     state: UsbDeviceState,
+    bridgeOnThisDevice: Boolean,
+    otherBridgeBlocking: Boolean,
     onRequestPermission: () -> Unit,
-    onAttach: () -> Unit,
+    onProbe: () -> Unit,
+    onStartBridge: () -> Unit,
+    onStopBridge: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            containerColor = if (bridgeOnThisDevice)
+                MaterialTheme.colorScheme.tertiaryContainer
+            else
+                MaterialTheme.colorScheme.surfaceVariant,
         ),
     ) {
         Column(
@@ -196,12 +255,14 @@ private fun UsbDeviceCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!state.granted) {
                     Button(onClick = onRequestPermission) { Text("Engedély") }
-                } else if (state.attached) {
-                    OutlinedButton(onClick = onAttach, enabled = false) {
-                        Text("Attached ✓")
-                    }
+                } else if (bridgeOnThisDevice) {
+                    Button(onClick = onStopBridge) { Text("Stop bridge") }
                 } else {
-                    Button(onClick = onAttach) { Text("Attach (bridge)") }
+                    OutlinedButton(onClick = onProbe) { Text("Probe") }
+                    Button(
+                        onClick = onStartBridge,
+                        enabled = !otherBridgeBlocking,
+                    ) { Text("Start bridge") }
                 }
             }
         }

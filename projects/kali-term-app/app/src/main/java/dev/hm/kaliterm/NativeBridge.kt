@@ -42,4 +42,25 @@ object NativeBridge {
      * az eredmény.
      */
     external fun nativeLastDescription(): String
+
+    /**
+     * Beindítja a usb-bridge URB-dispatch worker-szálát erre az fd-re.
+     * Egyszerre csak egy bridge futhat — ha már fut, `-EBUSY`-t ad.
+     * A worker `socketpair` egyik végén vár USB/IP PDU-kra; ezt a
+     * másik végét a JNI nyitva tartja, és Phase 2c-ben adjuk át a
+     * vhci_hcd-nek (LKL `usbip_sockfd_store`).
+     */
+    external fun nativeStartBridge(
+        fd: Int, vid: Int, pid: Int, busnum: Int, devnum: Int,
+    ): Int
+
+    /** Tisztán leállítja a futó bridge-példányt. Idempotens. */
+    external fun nativeStopBridge(): Int
+
+    /**
+     * Pillanatnyi bridge-állapot:
+     *   "STOPPED"
+     *   "RUNNING vid=… pid=… devid=… peer_sock=…"
+     */
+    external fun nativeBridgeStatus(): String
 }

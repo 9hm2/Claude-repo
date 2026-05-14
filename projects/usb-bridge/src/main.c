@@ -14,7 +14,7 @@
 
 #include <errno.h>
 #include <getopt.h>
-#include <libusb-1.0/libusb.h>
+#include <libusb.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
