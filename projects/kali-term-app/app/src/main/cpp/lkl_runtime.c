@@ -41,21 +41,21 @@
 
 typedef int  (*fn_lkl_init)(void *ops);
 typedef int  (*fn_lkl_start_kernel)(const char *cmd_line, ...);
+typedef void (*fn_lkl_cleanup)(void);
 typedef long (*fn_lkl_sys_halt)(void);
-typedef long (*fn_lkl_sys_open)(const char *pathname, int flags, int mode);
-typedef long (*fn_lkl_sys_read)(int fd, void *buf, unsigned long count);
+typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 
 static struct {
     pthread_mutex_t lock;
     int             resolved;        /* dlsym próbálta-e már */
-    int             available;       /* lkl_host_ops + start_kernel megvolt-e */
+    int             available;       /* lkl_init + start_kernel + host_ops megvolt-e */
     int             running;         /* lkl_init + lkl_start_kernel sikerült-e */
     void           *dl_handle;       /* dlopen("liblkl.so") visszaértéke */
     fn_lkl_init         init_fn;
     fn_lkl_start_kernel start_kernel;
+    fn_lkl_cleanup      cleanup_fn;
     fn_lkl_sys_halt     sys_halt;
-    fn_lkl_sys_open     sys_open;
-    fn_lkl_sys_read     sys_read;
+    fn_lkl_syscall      syscall_fn;
     void               *host_ops;    /* lkl_host_ops szimbólum (struct címe) */
     char                status_buf[1024];
 } g_lkl = { .lock = PTHREAD_MUTEX_INITIALIZER };
@@ -100,9 +100,9 @@ static void lkl_resolve_locked(void)
 
     g_lkl.init_fn      = (fn_lkl_init)        resolve("lkl_init");
     g_lkl.start_kernel = (fn_lkl_start_kernel)resolve("lkl_start_kernel");
+    g_lkl.cleanup_fn   = (fn_lkl_cleanup)     resolve("lkl_cleanup");
     g_lkl.sys_halt     = (fn_lkl_sys_halt)    resolve("lkl_sys_halt");
-    g_lkl.sys_open     = (fn_lkl_sys_open)    resolve("lkl_sys_open");
-    g_lkl.sys_read     = (fn_lkl_sys_read)    resolve("lkl_sys_read");
+    g_lkl.syscall_fn   = (fn_lkl_syscall)     resolve("lkl_syscall");
     g_lkl.host_ops     =                       resolve("lkl_host_ops");
 
     /* available = a minimum bekapcsoláshoz szükséges szimbólumok megvannak */
@@ -110,23 +110,28 @@ static void lkl_resolve_locked(void)
                        g_lkl.start_kernel != NULL &&
                        g_lkl.host_ops     != NULL);
 
-    /* Részletes diagnosztika MINDIG (jó/rossz esetre is), per-szimbólum-sor */
+    /* Részletes diagnosztika MINDIG (jó/rossz esetre is), per-szimbólum-sor.
+     * Megjegyzés: `lkl_sys_open` és `lkl_sys_read` szándékosan NINCS itt —
+     * azok a `tools/lkl/include/lkl.h` static inline wrapperjei, amelyek
+     * compilation-unit szintjén inline-olódnak a `lkl_syscall()` köré, és
+     * SOSEM kerülnek a .so szimbólumtáblájába. A valódi belépési pont a
+     * generic `lkl_syscall(no, params)` dispatcher. */
     snprintf(g_lkl.status_buf, sizeof(g_lkl.status_buf),
              "%s — szimbólumok (dlsym):\n"
              "  lkl_init         = %p%s\n"
              "  lkl_start_kernel = %p%s\n"
              "  lkl_host_ops     = %p%s\n"
              "  lkl_sys_halt     = %p%s\n"
-             "  lkl_sys_open     = %p%s\n"
-             "  lkl_sys_read     = %p%s\n"
+             "  lkl_cleanup      = %p%s\n"
+             "  lkl_syscall      = %p%s\n"
              "  dl_handle        = %p",
              g_lkl.available ? "AVAILABLE" : "UNAVAILABLE",
              (void*)g_lkl.init_fn,      g_lkl.init_fn      ? "" : "  ← MISSING",
              (void*)g_lkl.start_kernel, g_lkl.start_kernel ? "" : "  ← MISSING",
              g_lkl.host_ops,            g_lkl.host_ops     ? "" : "  ← MISSING",
              (void*)g_lkl.sys_halt,     g_lkl.sys_halt     ? "" : "  (opcionális)",
-             (void*)g_lkl.sys_open,     g_lkl.sys_open     ? "" : "  (opcionális)",
-             (void*)g_lkl.sys_read,     g_lkl.sys_read     ? "" : "  (opcionális)",
+             (void*)g_lkl.cleanup_fn,   g_lkl.cleanup_fn   ? "" : "  (opcionális)",
+             (void*)g_lkl.syscall_fn,   g_lkl.syscall_fn   ? "" : "  (opcionális)",
              g_lkl.dl_handle);
 
     LOGI("LKL resolve: available=%d", g_lkl.available);
