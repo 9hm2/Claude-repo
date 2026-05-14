@@ -33,18 +33,32 @@ fi
 echo "[fetch] kész: ${SRC_DIR}"
 ls "${SRC_DIR}/tools/lkl" >/dev/null  # sanity check: LKL fa
 
-# Helyi patch-ek alkalmazása (idempotens: `patch -N` ugorja az alreadyplt-eket).
+# Helyi patch-ek alkalmazása (idempotens: `patch -N` ugorja a már alkalmazottakat).
+# A patch outputja LÁTHATÓ marad — CI-debugban kulcs hogy melyik hunk hová ment.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCHES_DIR="${SCRIPT_DIR}/../patches"
 if [[ -d "${PATCHES_DIR}" ]]; then
     shopt -s nullglob
     for p in "${PATCHES_DIR}"/*.patch; do
-        echo "[fetch] patch: $(basename "$p")"
-        if patch -p1 -N --no-backup-if-mismatch -d "${SRC_DIR}" -i "$p" >/dev/null; then
-            echo "[fetch]   alkalmazva"
-        else
-            # `patch -N` 1-et ad ha már alkalmazott — ne dőljön ettől
-            echo "[fetch]   már alkalmazva (vagy nincs változás), folytatás"
-        fi
+        pname=$(basename "$p")
+        echo "[fetch] === patch: ${pname} ==="
+        set +e
+        patch -p1 -N --no-backup-if-mismatch -d "${SRC_DIR}" -i "$p"
+        rc=$?
+        set -e
+        case "${rc}" in
+          0) echo "[fetch]   ✓ alkalmazva: ${pname}" ;;
+          1) echo "[fetch]   → már alkalmazva: ${pname}" ;;
+          *) echo "[fetch]   ✗ HIBA: patch parancs rc=${rc}, ${pname}" >&2; exit 1 ;;
+        esac
     done
+    # Verifikáció: a patch-eink ténylegesen érvényesültek-e a forrásban
+    if [[ -f "${SRC_DIR}/tools/lkl/Makefile.autoconf" ]] \
+       && ! grep -q "aarch64-linux-android" "${SRC_DIR}/tools/lkl/Makefile.autoconf"; then
+        echo "[fetch] ✗ HIBA: a Makefile.autoconf patch NEM látszik a forrásban!" >&2
+        echo "[fetch]   tartalom körül:" >&2
+        grep -n "llvm_target_to_ld_fmt\|Unsupported LLVM" "${SRC_DIR}/tools/lkl/Makefile.autoconf" || true
+        exit 1
+    fi
+    echo "[fetch] verifikáció: patch-ek a forrásban OK"
 fi
