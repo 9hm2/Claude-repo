@@ -13,10 +13,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -25,10 +26,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -117,33 +121,10 @@ fun Home(modifier: Modifier = Modifier) {
         }
 
         if (!lastDesc.isNullOrBlank()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                ),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = "Descriptor (libusb_wrap_sys_device)",
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Text(
-                        text = lastDesc.orEmpty(),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 220.dp)
-                            .verticalScroll(rememberScrollState()),
-                    )
-                }
-            }
+            CopyableLogCard(
+                title = "Descriptor (libusb_wrap_sys_device)",
+                content = lastDesc.orEmpty(),
+            )
         }
 
         if (controller.devices.isEmpty()) {
@@ -181,6 +162,7 @@ private fun BridgeStatusBar(
     running: Boolean,
     onStop: () -> Unit,
 ) {
+    val clipboard = LocalClipboardManager.current
     val color = if (running) MaterialTheme.colorScheme.tertiaryContainer
                 else          MaterialTheme.colorScheme.surfaceVariant
     Card(
@@ -199,14 +181,74 @@ private fun BridgeStatusBar(
                     text = if (running) "Bridge — RUNNING" else "Bridge — STOPPED",
                     style = MaterialTheme.typography.titleSmall,
                 )
-                Text(
-                    text = status,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                )
+                // SelectionContainer: long-press → select → system "copy".
+                SelectionContainer {
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
             }
-            if (running) {
-                OutlinedButton(onClick = onStop) { Text("Stop") }
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(status))
+                }) { Text("Másol") }
+                if (running) {
+                    OutlinedButton(onClick = onStop) { Text("Stop") }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Hosszabb, scrollozható, mono-spaced szöveg dobozban — `SelectionContainer`
+ * + egy "Másolás" gomb, ami a teljes tartalmat egy érintéssel vágólapra teszi.
+ * Logok és descriptor-dump-ok megjelenítésére használjuk.
+ */
+@Composable
+private fun CopyableLogCard(
+    title: String,
+    content: String,
+    maxHeight: androidx.compose.ui.unit.Dp = 220.dp,
+) {
+    val clipboard = LocalClipboardManager.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(content))
+                }) { Text("Másolás") }
+            }
+            SelectionContainer {
+                Text(
+                    text = content,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = maxHeight)
+                        .verticalScroll(rememberScrollState()),
+                )
             }
         }
     }

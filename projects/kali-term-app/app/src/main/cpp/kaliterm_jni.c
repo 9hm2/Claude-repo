@@ -75,14 +75,14 @@ JNIEXPORT jstring JNICALL
 Java_dev_hm_kaliterm_NativeBridge_nativeHello(JNIEnv *env, jobject thiz)
 {
     LOGI("nativeHello: bridge loaded, JNI working");
-    return (*env)->NewStringUTF(env, "kaliterm native online (Phase 2b.3 — bridge embedded)");
+    return (*env)->NewStringUTF(env, "kaliterm native online (Phase 2b.3.1 — copyable logs)");
 }
 
 JNIEXPORT jint JNICALL
 Java_dev_hm_kaliterm_NativeBridge_nativeVersion(JNIEnv *env, jobject thiz)
 {
-    /* 2 . 3 . 0  → Phase 2.3.0 */
-    return 20300;
+    /* 2 . 3 . 1  → Phase 2.3.1 */
+    return 20301;
 }
 
 JNIEXPORT jstring JNICALL
