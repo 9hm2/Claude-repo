@@ -1,0 +1,62 @@
+name: kali-term-app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/kali-term-app/**'
+      - '.github/workflows/kali-term-app.yml'
+  pull_request:
+    paths:
+      - 'projects/kali-term-app/**'
+      - '.github/workflows/kali-term-app.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: projects/kali-term-app
+
+jobs:
+  build:
+    name: Build & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Install Android NDK (27.0.12077973)
+        run: |
+          # A runneren van Android SDK; NDK-t a sdkmanager-rel telepítjük
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.0.12077973" "cmake;3.22.1" \
+            > /dev/null
+          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Lint
+        run: ./gradlew lint --stacktrace
+
+      - name: Unit tests
+        run: ./gradlew test --stacktrace
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaliterm-debug-apk
+          path: projects/kali-term-app/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
