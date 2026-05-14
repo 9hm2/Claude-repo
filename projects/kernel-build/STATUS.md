@@ -73,36 +73,32 @@ A host oldal (`projects/usb-bridge/`) **Fázis 1b + 1c** alatt kész:
   pdu-kban mennek vissza a `vhci_hcd`-nek. Részletek:
   `projects/usb-bridge/README.md`.
 
-## ⚠️ Phase 2c blokkoló: Android NDK / Bionic LKL build
+## Phase 2c.2 — Android NDK / Bionic LKL build
 
-A jelen `kernel.yml` glibc-targetelt LKL-t épít (`aarch64-linux-gnu-gcc`
-+ `libc6-dev-arm64-cross`). A kimeneti `liblkl-host-lib.so` az
-**Ubuntu/Debian ARM64 glibc-re hivatkozik** — ezt az Android Bionic
-loader nem tudja betölteni, mert a libc-szimbólumkészletek és ABI
-inkompatibilisek.
+A `kernel.yml`-ben jelenleg három build job fut párhuzamosan:
 
-A kali-term-app jniLibs-jébe **Bionic-targetelt** változat kell.
-Három járható út:
+| Job | Toolchain | Artifact | Cél |
+| --- | --- | --- | --- |
+| `LKL build (x86_64 host)` | host gcc | `lkl-x86_64` | Sanity / fejlesztés |
+| `LKL build (arm64 cross)` | `aarch64-linux-gnu-gcc` (glibc) | `lkl-arm64` | Referencia, Linux ARM64 |
+| **`LKL build (android arm64, Bionic)`** | **`aarch64-linux-android24-clang` (Bionic)** | **`lkl-android-arm64`** | **kali-term-app jniLibs** |
 
-| Opció | Lényeg | Költség |
-| --- | --- | --- |
-| **A — új CI job** | `kernel.yml` mellé egy `LKL build (android arm64)` job az NDK clang toolchain-nel; külön artifact: `lkl-android-arm64` | Egy új workflow-step, +~10 perc CI |
-| B — app build-időben | `kali-term-app` CMake `ExternalProject_Add`-del a kbuild Make-jét hívja NDK toolchainnel | Minden app build +10–15 perc |
-| C — külön workflow | `lkl-android.yml` csak ezt csinálja | Több infrastruktúra, ordering issue-k |
-
-**A** az ajánlott — `kernel-build` mint a kernel-source-of-truth marad,
-csak egy újabb target/job. A `kali-term-app` CI letölti a most már
-megjelenő `lkl-android-arm64` artifact-ot és berakja a `jniLibs/arm64-v8a/`
-alá.
-
-### Konkrét hatás (Phase 2c.1 — most)
+A harmadik job az NDK 27.0.12077973-at telepíti `sdkmanager`-rel, majd
+`make lkl-android-arm64`-t futtat — a `scripts/build-lkl.sh` az NDK
+clangot + LLVM tools-t (`llvm-ar`, `ld.lld`, `llvm-strip`, `llvm-nm`,
+`llvm-objcopy`) használ a kbuild minden szintjén. Eredmény:
+`out/android-arm64/liblkl-host-lib.so` — Bionic ABI, ARM64 ELF,
+dinamikusan az Android `libc.so`-ra hivatkozik.
 
 A `kali-term-app` Phase 2c.1-ben **API-szinten előkészítve** van:
 - `nativeLklStatus / nativeLklStart / nativeLklStop` JNI metódusok
 - `dlsym(RTLD_DEFAULT, ...)` alapú symbol resolution — graceful degrade
-- UI mutatja: `LKL — UNAVAILABLE` (jelenleg), `LOADED`, vagy `RUNNING`
-- Amint a Bionic-build .so megérkezik a jniLibs alá, a státusz
-  automatikusan átvált; semmi más kódváltozás nem kell.
+- UI mutatja: `LKL — UNAVAILABLE / LOADED / RUNNING`.
+
+A Phase 2c.3 (következő, kali-term-app oldal) a `lkl-android-arm64`
+artifact-ot pull-olja le a kernel.yml legutóbbi sikeres futásából,
+és kimásolja `app/src/main/jniLibs/arm64-v8a/liblkl-host-lib.so`-ba —
+ezzel az APK install-után az LKL panel automatikusan `LOADED`-re vált.
 
 ## Fázis 2 (következő) — end-to-end összekötés
 

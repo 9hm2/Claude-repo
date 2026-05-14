@@ -77,3 +77,42 @@ jobs:
           name: lkl-arm64
           path: projects/kernel-build/out/arm64/
           if-no-files-found: error
+
+  android-arm64:
+    name: LKL build (android arm64, Bionic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            xz-utils ca-certificates curl git pkg-config
+
+      - name: Install Android NDK 27.0.12077973
+        run: |
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: Build LKL (NDK aarch64-linux-android24-clang)
+        run: make lkl-android-arm64
+
+      - name: Inspect output
+        run: |
+          ls -lh out/android-arm64/
+          file out/android-arm64/* || true
+          # Bionic-ABI ellenőrzés: ne legyen libc.so.6 NEEDED
+          for f in out/android-arm64/*.so; do
+            echo "--- readelf -d $f ---"
+            "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$f" | head -30 || true
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lkl-android-arm64
+          path: projects/kernel-build/out/android-arm64/
+          if-no-files-found: error

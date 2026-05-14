@@ -7,23 +7,40 @@
 set -euo pipefail
 
 SRC_DIR="${1:?usage: configure-lkl.sh <src_dir> <subarch> <fragment>}"
-SUBARCH="${2:?subarch}"   # x86_64 | arm64
+SUBARCH="${2:?subarch}"   # x86_64 | arm64 | android-arm64
 FRAGMENT="${3:?fragment}"
 
 case "${SUBARCH}" in
-  x86_64|arm64) ;;
+  x86_64|arm64|android-arm64) ;;
   *) echo "ismeretlen SUBARCH: ${SUBARCH}" >&2; exit 2 ;;
 esac
 
 cd "${SRC_DIR}"
 
-echo "[configure] alap LKL defconfig"
-make ARCH=lkl defconfig
+# Android-NDK target esetén a defconfig is a célplatformra fordított
+# helper-binárisokat akar — explicit toolchain-felülbírálás kell.
+MAKE_EXTRA=()
+if [[ "${SUBARCH}" == "android-arm64" ]]; then
+  : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME nincs beállítva (NDK install path)}"
+  NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+  MAKE_EXTRA+=(
+    "CC=${NDK_BIN}/aarch64-linux-android24-clang"
+    "HOSTCC=cc"
+    "AR=${NDK_BIN}/llvm-ar"
+    "LD=${NDK_BIN}/ld.lld"
+    "NM=${NDK_BIN}/llvm-nm"
+    "STRIP=${NDK_BIN}/llvm-strip"
+    "OBJCOPY=${NDK_BIN}/llvm-objcopy"
+  )
+fi
+
+echo "[configure] alap LKL defconfig (SUBARCH=${SUBARCH})"
+make ARCH=lkl "${MAKE_EXTRA[@]}" defconfig
 
 if [[ -f "${FRAGMENT}" ]]; then
   echo "[configure] saját fragment merge-elése: ${FRAGMENT}"
   ./scripts/kconfig/merge_config.sh -m -O . .config "${FRAGMENT}"
-  make ARCH=lkl olddefconfig
+  make ARCH=lkl "${MAKE_EXTRA[@]}" olddefconfig
 else
   echo "[configure] nincs config fragment, csak az alap LKL defconfig"
 fi
