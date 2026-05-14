@@ -1,0 +1,3 @@
+# Linux mainline verzió, amit a build leszed és lefordít.
+# A LTS verziók 5 évig kapnak frissítést — 6.12 a jelenlegi LTS.
+KERNEL_VERSION=6.12.30
