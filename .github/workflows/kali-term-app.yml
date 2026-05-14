@@ -42,6 +42,75 @@ jobs:
             > /dev/null
           echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
 
+      - name: Download lkl-android-arm64 artifact from kernel.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          JNILIB_DIR="app/src/main/jniLibs/arm64-v8a"
+          ASSETS_DIR="app/src/main/assets/lkl/arm64-v8a"
+          mkdir -p "$JNILIB_DIR" "$ASSETS_DIR"
+
+          pull_run() {
+            local branch="$1"
+            echo "→ kerese kernel.yml legutóbbi sikeres run-ját a(z) $branch branch-en"
+            local run_id
+            run_id=$(gh run list --workflow=kernel.yml --branch="$branch" \
+                       --status=success --limit 5 \
+                       --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "")
+            if [[ -z "${run_id}" || "${run_id}" == "null" ]]; then
+              echo "  nincs sikeres futás ezen a branch-en"
+              return 1
+            fi
+            echo "  run id: ${run_id}"
+            local tmp; tmp=$(mktemp -d)
+            if ! gh run download "${run_id}" --name lkl-android-arm64 --dir "${tmp}" 2>/dev/null; then
+              echo "  artifact 'lkl-android-arm64' nincs ezen a run-on"
+              rm -rf "${tmp}"
+              return 1
+            fi
+            echo "  artifact letöltve, tartalom:"
+            ls -R "${tmp}"
+
+            # .so és .a file-ok → jniLibs (Android auto-extract)
+            #   FIGYELEM: csak a `lib*.so` mintát csomagolja az APK-be, az `.a`
+            #   archive-okat csak referenciaként visszük (Gradle ignorálja, de
+            #   debug-target build-hez kéznél lehet).
+            local soc=0 toolc=0
+            if [[ -d "${tmp}/lib" ]]; then
+              for f in "${tmp}"/lib/*.so; do
+                [[ -f "$f" ]] || continue
+                cp -v "$f" "${JNILIB_DIR}/"
+                soc=$((soc+1))
+              done
+            fi
+            # Példa-tool binárisok (cptofs, cpfromfs, lklfuse, fs2tar) → assets
+            # Phase 2c.4-ben az app runtime-ban filesDir-be extractálja + chmod +x
+            if [[ -d "${tmp}/bin" ]]; then
+              for f in "${tmp}"/bin/*; do
+                [[ -f "$f" ]] || continue
+                cp -v "$f" "${ASSETS_DIR}/"
+                toolc=$((toolc+1))
+              done
+            fi
+            rm -rf "${tmp}"
+            echo "  → ${soc} db .so + ${toolc} db tool másolva"
+            [[ "${soc}" -gt 0 ]]
+          }
+
+          if pull_run "${GITHUB_REF_NAME:-main}" || pull_run main; then
+            echo "✓ LKL .so készen, jniLibs:"
+            ls -lh "${JNILIB_DIR}"
+            if [[ -d "${ASSETS_DIR}" ]] && compgen -G "${ASSETS_DIR}/*" >/dev/null; then
+              echo "✓ LKL tools, assets:"
+              ls -lh "${ASSETS_DIR}"
+            fi
+          else
+            echo "⚠️  Nincs lkl-android-arm64 artifact — az APK LKL nélkül épül." >&2
+            echo "    (kernel.yml ezen a branch-en és a main-en sem fut sikeresen.)" >&2
+          fi
+
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 

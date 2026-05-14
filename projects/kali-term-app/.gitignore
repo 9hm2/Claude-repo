@@ -11,3 +11,8 @@ captures/
 *.aab
 *.keystore
 release/
+
+# CI által letöltött LKL artifact tartalom — generált, nem tracked.
+app/src/main/jniLibs/arm64-v8a/*.so
+app/src/main/jniLibs/arm64-v8a/*.a
+app/src/main/assets/lkl/

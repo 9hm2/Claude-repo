@@ -67,31 +67,37 @@ esac
 echo "[build] make -j${JOBS} -C tools/lkl ${EXTRA_ARGS[*]:-}"
 make -j"${JOBS}" -C tools/lkl "${EXTRA_ARGS[@]}"
 
-mkdir -p "${OUT_DIR}/${SUBARCH}"
+mkdir -p "${OUT_DIR}/${SUBARCH}/lib" "${OUT_DIR}/${SUBARCH}/bin"
 
-# Az LKL kimenetek pozíciója fejlődéssel változott — minden valószínű
-# kandidátust keresünk, és kimentjük az out/ alá.
+# Az LKL kimeneti library-k pozíciója verziónként változott — minden
+# `liblkl*.so` / `liblkl*.a`-t kimentünk, és külön mappába az example
+# tool binárisokat (cptofs/cpfromfs/lklfuse/fs2tar, illetve a bin/* ELF-eket).
 copied=0
-for cand in \
-    tools/lkl/lib/liblkl-host-lib.so \
-    tools/lkl/liblkl-host-lib.so \
-    tools/lkl/lib/liblkl.so \
-    tools/lkl/liblkl.so \
-    tools/lkl/lib/liblkl.a \
-    tools/lkl/liblkl.a; do
-  if [[ -f "${cand}" ]]; then
-    cp -v "${cand}" "${OUT_DIR}/${SUBARCH}/"
+while IFS= read -r f; do
+    cp -v "$f" "${OUT_DIR}/${SUBARCH}/lib/"
     copied=1
-  fi
+done < <(find tools/lkl -maxdepth 4 \( -name 'liblkl*.so' -o -name 'liblkl*.a' \) -type f 2>/dev/null)
+
+for cand in \
+    tools/lkl/cptofs \
+    tools/lkl/cpfromfs \
+    tools/lkl/lklfuse \
+    tools/lkl/fs2tar; do
+    if [[ -f "${cand}" && -x "${cand}" ]]; then
+        cp -v "${cand}" "${OUT_DIR}/${SUBARCH}/bin/"
+        copied=1
+    fi
 done
 
-# Példa-toolok (cptofs, cpfromfs, lklfuse, ...) — ha vannak, vigyük.
-for cand in tools/lkl/bin/* tools/lkl/cptofs tools/lkl/cpfromfs tools/lkl/lklfuse; do
-  if [[ -f "${cand}" && -x "${cand}" ]]; then
-    cp -v "${cand}" "${OUT_DIR}/${SUBARCH}/" || true
-    copied=1
-  fi
+# A `bin/` mappában is lehet kiegészítő tool (pl. fuzz-target ELF-ek)
+shopt -s nullglob
+for f in tools/lkl/bin/*; do
+    if [[ -f "$f" && -x "$f" && ! "$f" =~ \.(o|so|a)$ ]]; then
+        cp -v "$f" "${OUT_DIR}/${SUBARCH}/bin/" 2>/dev/null || true
+        copied=1
+    fi
 done
+shopt -u nullglob
 
 if [[ "${copied}" -eq 0 ]]; then
   echo "[build] HIBA: egy LKL kimeneti fájl sem található. tools/lkl tartalom:" >&2
@@ -100,4 +106,4 @@ if [[ "${copied}" -eq 0 ]]; then
 fi
 
 echo "[build] kész — kimenetek:"
-ls -lh "${OUT_DIR}/${SUBARCH}/"
+find "${OUT_DIR}/${SUBARCH}" -type f -exec ls -lh {} +
