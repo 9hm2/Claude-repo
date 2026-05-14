@@ -68,3 +68,12 @@ out/                           # kész binárisok (gitignore)
 - **Fázis 3+**: érdemi driver-bekapcsolások a `config/kaliterm_um.config`-ban.
 
 Részletek a fő tervben: `/root/.claude/plans/a-termux-termin-l-emul-tor-nifty-parasol.md`.
+
+## ⚠️ Architektúra-blokkoló: ARM64 host UML nincs upstream-ben
+
+A Fázis 0 első CI futása kiderítette, hogy a mainline 6.12 LTS **nem
+tartalmaz `arch/arm64/Makefile.um`-et**, tehát ARM64 host UM upstream nincs.
+Részletes elemzés és opciók: [`STATUS.md`](STATUS.md).
+
+Rövid összefoglaló: az ajánlott megoldás **pivot LKL-re** (Linux Kernel
+Library). Felhasználói döntésre vár.

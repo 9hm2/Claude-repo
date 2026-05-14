@@ -50,40 +50,8 @@ jobs:
           path: projects/kernel-build/out/x86_64/linux-um
           if-no-files-found: error
 
-  arm64:
-    name: UM build (arm64 cross)
-    runs-on: ubuntu-latest
-    continue-on-error: true  # Fázis 0: ha még nem megy, ne blokkolja a PR-t
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install build dependencies (incl. arm64 cross toolchain)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libssl-dev libelf-dev \
-            xz-utils ca-certificates curl \
-            gcc-aarch64-linux-gnu
-
-      - name: Cache kernel tarball
-        uses: actions/cache@v4
-        with:
-          path: projects/kernel-build/build/*.tar.xz
-          key: kernel-tarball-${{ hashFiles('projects/kernel-build/KERNEL_VERSION') }}
-
-      - name: Build UML kernel (arm64 host cross)
-        env:
-          CROSS_COMPILE: aarch64-linux-gnu-
-        run: make um-arm64
-
-      - name: Inspect output
-        run: |
-          file out/arm64/linux-um
-          ls -lh out/arm64/linux-um
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-um-arm64
-          path: projects/kernel-build/out/arm64/linux-um
-          if-no-files-found: warn
+  # ARM64 host UML build job: szándékosan kihagyva.
+  # Indok: a Linux mainline 6.12 LTS-ben nincs `arch/arm64/Makefile.um`,
+  # tehát az ARM64 host UML upstream nem létezik. Ez az architektúra
+  # alapköve, ezért külön döntést igényel — ld. projects/kernel-build/STATUS.md.
+  # Várható feloldási opciók: LKL pivot, vagy out-of-tree ARM64 UM patch-sorozat.
