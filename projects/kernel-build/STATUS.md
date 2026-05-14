@@ -48,6 +48,27 @@ A Fázis 0 új célja: az LKL library lefordul **mindkét host architektúrára*
 (x86_64 + arm64 cross), és az artifact-okat (`liblkl-host-lib.so` + tools)
 CI feltölti.
 
+**Fázis 0 lezárva**: ✅ mindkét architektúra zöldül a CI-ban, az artifact-ok
+elérhetők. (`liblkl-host-lib.so` + `lklfuse`, `cptofs`, `cpfromfs`.)
+
+## Fázis 1a — USB stack bekapcsolva (in progress)
+
+**Megközelítés**: nem írunk saját HCD driver-t. Helyette bekapcsoljuk a már
+létező mainline **`vhci_hcd` (USB/IP)** driver-t, ami pontosan arra való,
+hogy egy socket-en jövő URB-eket lekezeljen.
+
+Az LKL kernelbe bekerülő driver-készlet ezzel a commit-tal:
+
+| Modul | Mire jó |
+| --- | --- |
+| `drivers/usb/core/*` | USB core, hub, URB dispatch |
+| `drivers/usb/usbip/vhci_hcd.c` | Virtuális USB HCD — socket-FD-ről URB |
+| `drivers/usb/serial/{ftdi_sio,ch341,cp210x,pl2303}.c` | USB serial smoke test |
+| `drivers/hid/usbhid/*`, `drivers/hid/hid-generic.c` | USB HID smoke test |
+
+A host oldalt (`projects/usb-bridge/`) a következő commit hozza:
+USB/IP-protokoll-beszélő Unix-socket szerver → libusb → Android UsbManager FD.
+
 A következő fázisban (Fázis 1) jön az **USB host shim** — a `tools/lkl/`
 extensible host-interfészen keresztül az Android UsbManager FD-t bedrótozzuk
 a kernel USB stack-jébe, hogy a Linux USB drivere lássa a fizikai eszközt.
