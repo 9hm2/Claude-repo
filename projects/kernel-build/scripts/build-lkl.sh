@@ -36,6 +36,9 @@ case "${SUBARCH}" in
     # CROSS_COMPILE → LKL `tools/lkl/Makefile.autoconf` ebből deríti a triple-t
     #   (patches/0001-... után aarch64-linux-android24 már elfogadott).
     # CLANG_TARGET_FLAGS — a felső szintű kbuild check kedvéért is.
+    # Minden llvm-* tool explicit full-path-tal — az NDK bin nincs $PATH-ban,
+    # és LKL arch/lkl/scripts/cc-objdump-file-format.sh stb. bare $OBJDUMP-ot
+    # hív Kconfig-evalban.
     EXTRA_ARGS+=(
       "LLVM=1"
       "CROSS_COMPILE=aarch64-linux-android24"
@@ -47,6 +50,10 @@ case "${SUBARCH}" in
       "NM=${NDK_BIN}/llvm-nm"
       "STRIP=${NDK_BIN}/llvm-strip"
       "OBJCOPY=${NDK_BIN}/llvm-objcopy"
+      "OBJDUMP=${NDK_BIN}/llvm-objdump"
+      "READELF=${NDK_BIN}/llvm-readelf"
+      "OBJSIZE=${NDK_BIN}/llvm-size"
+      "HOSTLD=${NDK_BIN}/ld.lld"
     )
     echo "[build] android-arm64 NDK toolchain: ${NDK_BIN}"
     ;;

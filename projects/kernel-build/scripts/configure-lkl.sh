@@ -35,6 +35,10 @@ if [[ "${SUBARCH}" == "android-arm64" ]]; then
   # kbuild (defconfig step) nem fut tools/lkl autoconfon át, ezért
   # CLANG_TARGET_FLAGS-t is explicit átadunk, hogy a scripts/Makefile.clang
   # `add '--target=' option` check átmenjen.
+  # MINDEN llvm-* eszközt explicit full-path-tal adunk át. A kbuild LLVM=1
+  # módban csak a bare neveket ismeri (llvm-ar, llvm-objdump, stb.) — de
+  # az NDK-bin nincs a $PATH-ban, és LKL `arch/lkl/scripts/cc-objdump-file-format.sh`
+  # bare `$OBJDUMP`-ot hív, ezért `OBJDUMP` is kell, nem csak OBJCOPY.
   MAKE_EXTRA+=(
     "LLVM=1"
     "CROSS_COMPILE=aarch64-linux-android24"
@@ -46,6 +50,10 @@ if [[ "${SUBARCH}" == "android-arm64" ]]; then
     "NM=${NDK_BIN}/llvm-nm"
     "STRIP=${NDK_BIN}/llvm-strip"
     "OBJCOPY=${NDK_BIN}/llvm-objcopy"
+    "OBJDUMP=${NDK_BIN}/llvm-objdump"
+    "READELF=${NDK_BIN}/llvm-readelf"
+    "OBJSIZE=${NDK_BIN}/llvm-size"
+    "HOSTLD=${NDK_BIN}/ld.lld"
   )
 fi
 
