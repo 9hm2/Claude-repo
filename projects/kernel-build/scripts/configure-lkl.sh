@@ -23,15 +23,16 @@ MAKE_EXTRA=()
 if [[ "${SUBARCH}" == "android-arm64" ]]; then
   : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME nincs beállítva (NDK install path)}"
   NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-  # LLVM=1 → kbuild llvm tool-okat keres (llvm-ar, ld.lld, stb.) prefix nélkül,
-  # az explicit AR/LD/... megadás felülírja.
-  # CROSS_COMPILE → csak a `--target=` triple derivációja miatt kell;
-  # a tool-prefix nem létezik az NDK-ban, az LLVM=1 ezt rendben kezeli.
-  # Az NDK clang wrapper (`aarch64-linux-android24-clang`) saját --target=...android24
-  # flag-et ad, ami az utolsó wins szabály miatt felülírja a kbuild-ét.
+  # scripts/Makefile.clang a SRCARCH alapján egy hard-coded táblából deríti
+  # a target triple-t (CLANG_TARGET_FLAGS_arm64=aarch64-linux-gnu, stb.).
+  # LKL `SRCARCH=lkl`-t használ, de a táblában nincs `CLANG_TARGET_FLAGS_lkl`,
+  # ezért a kbuild "add '--target=' option" hibával leáll. Make command-line
+  # override-dal felülírjuk a `:=` assignmentet.
+  # LLVM=1 → llvm-* tool-ok prefix nélkül; explicit AR/LD/... megadás
+  # győz minden default fölött.
   MAKE_EXTRA+=(
     "LLVM=1"
-    "CROSS_COMPILE=aarch64-linux-android-"
+    "CLANG_TARGET_FLAGS=aarch64-linux-android24"
     "CC=${NDK_BIN}/aarch64-linux-android24-clang"
     "HOSTCC=cc"
     "AR=${NDK_BIN}/llvm-ar"

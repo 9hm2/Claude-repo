@@ -26,16 +26,16 @@ case "${SUBARCH}" in
       echo "[build] HIBA: nincs aarch64-linux-android24-clang itt: ${NDK_BIN}" >&2
       exit 3
     fi
-    # LLVM=1 + CROSS_COMPILE=aarch64-linux-android-:
-    #   az kbuild `scripts/Makefile.clang` ebből deríti a target triple-t.
-    #   Az LLVM=1 jelzi hogy minden tool llvm-* (prefix nélkül); az explicit
-    #   AR/LD/NM/STRIP/OBJCOPY megadás felülírja az auto-detect-et.
-    #   Az NDK clang wrapper (aarch64-linux-android24-clang) saját --target=
-    #   flag-je később jön a parancssorban, így overrideolja a kbuild által
-    #   hozzáadott --target=aarch64-linux-android-et (utolsó wins).
+    # scripts/Makefile.clang a SRCARCH alapján egy hard-coded táblából deríti
+    # a target triple-t — pl. CLANG_TARGET_FLAGS_arm64 := aarch64-linux-gnu.
+    # LKL `SRCARCH=lkl`-t használ, de nincs `CLANG_TARGET_FLAGS_lkl` érték,
+    # ezért a kbuild "add '--target=' option" hibával leáll. Make command-line
+    # override-dal definiáljuk a változót (felülírja a Makefile `:=` assignmentet).
+    # LLVM=1 → llvm-* tool-okat keres prefix nélkül; explicit AR/LD/NM/...
+    # megadás minden default fölött győz.
     EXTRA_ARGS+=(
       "LLVM=1"
-      "CROSS_COMPILE=aarch64-linux-android-"
+      "CLANG_TARGET_FLAGS=aarch64-linux-android24"
       "CC=${NDK_BIN}/aarch64-linux-android24-clang"
       "HOSTCC=cc"
       "AR=${NDK_BIN}/llvm-ar"
