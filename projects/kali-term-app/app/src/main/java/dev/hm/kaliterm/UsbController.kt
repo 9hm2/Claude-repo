@@ -50,6 +50,8 @@ class UsbController(private val context: Context) {
 
     val devices = mutableStateListOf<UsbDeviceState>()
     val lastAttachLog = mutableStateOf<String?>(null)
+    /** Az utolsó natív rétegtől visszakapott descriptor-diagnosztika, UI-ban mutatva. */
+    val lastDescription = mutableStateOf<String?>(null)
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
@@ -122,6 +124,8 @@ class UsbController(private val context: Context) {
         lastAttachLog.value = "fd=$fd VID=%04x PID=%04x rc=$rc".format(
             state.device.vendorId, state.device.productId,
         )
+        lastDescription.value = runCatching { NativeBridge.nativeLastDescription() }
+            .getOrElse { "(natív rétegtől nem jött descriptor: ${it.message})" }
         // Frissítjük az UI-állapotot.
         val idx = devices.indexOfFirst { it.device.deviceId == state.device.deviceId }
         if (idx >= 0) devices[idx] = state.copy(attached = (rc >= 0))

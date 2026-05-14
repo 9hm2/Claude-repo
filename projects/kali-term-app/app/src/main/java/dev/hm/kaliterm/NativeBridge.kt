@@ -34,4 +34,12 @@ object NativeBridge {
     external fun nativeAcceptUsbDevice(
         fd: Int, vid: Int, pid: Int, busnum: Int, devnum: Int,
     ): Int
+
+    /**
+     * Az utolsó `nativeAcceptUsbDevice` futás emberi-olvasásra formázott
+     * diagnosztikai szövege (libusb device + config descriptor dump,
+     * vagy hibaüzenet). UI-ban megjelenítve logcat nélkül is látszik
+     * az eredmény.
+     */
+    external fun nativeLastDescription(): String
 }
