@@ -1,0 +1,41 @@
+/*
+ * libusb 1.0.27 — Android NDK build configuration.
+ *
+ * Ezt a fájlt kézzel írjuk, az autoconf-generálta config.h ekvivalense
+ * Android NDK target-re. Ha a libusb verzió változik, ellenőrizd hogy
+ * a kapcsolók még helyesek-e (különös tekintettel a HAVE_DECL_*-okra).
+ *
+ * libusb a Linux usbfs backendet használja (drivers/usb/usbfs.c
+ * ekvivalense Androidon: /dev/bus/usb/). Mi viszont
+ * `libusb_wrap_sys_device()`-szal egy konkrét fd-t adunk meg, ami a
+ * UsbManager-ből jön, ezért NEM scannel `/dev/bus/usb`-t (rootless
+ * Androidon nincs is hozzá joga). Erre garancia a runtime hívás:
+ *     libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
+ */
+#ifndef LIBUSB_CONFIG_H
+#define LIBUSB_CONFIG_H
+
+#define DEFAULT_VISIBILITY __attribute__((visibility("default")))
+
+#define ENABLE_LOGGING 1
+#define USE_SYSTEM_LOGGING_FACILITY 1
+
+/* Linux/Android kernel feature-ek elérhetőek. */
+#define HAVE_EVENTFD 1
+#define HAVE_TIMERFD 1
+#define HAVE_PIPE2 1
+#define HAVE_NFDS_T 1
+#define HAVE_CLOCK_GETTIME 1
+
+#define HAVE_DECL_EFD_CLOEXEC 1
+#define HAVE_DECL_EFD_NONBLOCK 1
+#define HAVE_DECL_TFD_CLOEXEC 1
+#define HAVE_DECL_TFD_NONBLOCK 1
+
+#define POLL_NFDS_TYPE nfds_t
+
+#define PLATFORM_POSIX 1
+
+#define _GNU_SOURCE 1
+
+#endif /* LIBUSB_CONFIG_H */

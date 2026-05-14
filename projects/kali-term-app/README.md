@@ -33,7 +33,7 @@ Ez kapcsolja össze a többi komponenst:
 - Compose home-screen: app név + natív string + build verzió
 - CI workflow APK artifact-tal
 
-**Phase 2b.1 — UsbManager UI + FD átadás JNI-n (jelen állapot):**
+**Phase 2b.1 — UsbManager UI + FD átadás JNI-n (kész):**
 - `UsbController` osztály: device discovery (`UsbManager.deviceList`),
   per-eszköz permission (`PendingIntent` + `BroadcastReceiver`),
   `openDevice()` után az `fileDescriptor`-t átadja a natív rétegnek.
@@ -44,13 +44,32 @@ Ez kapcsolja össze a többi komponenst:
   logol, majd egyelőre `close`-olja.
 - Manifest: `android.hardware.usb.host` deklarálva (`required=false`).
 
-**Phase 2b.2 (következő):**
+**Phase 2b.2 — libusb 1.0.27 beépítve, descriptor probe (jelen állapot):**
+- libusb forrást FetchContent-tel húzzuk be a CMake build-be (1.0.27
+  release tarball, SHA256-pin); statikus library-be építve.
+- `cmake/libusb-config.h.in` — saját Android NDK config.h, autoconf
+  helyett (`HAVE_EVENTFD`, `HAVE_TIMERFD`, `POLL_NFDS_TYPE`, stb.).
+- `nativeAcceptUsbDevice` mostantól:
+  1. `dup`-olja az fd-t (libusb_close ne zárja le a Kotlin oldal eredetijét),
+  2. `libusb_set_option(NO_DEVICE_DISCOVERY)` — root nélkül nem szabad
+     a `/dev/bus/usb`-t scannelni,
+  3. `libusb_init` + `libusb_wrap_sys_device(dup_fd)`,
+  4. `libusb_get_device_descriptor` + `libusb_get_active_config_descriptor`
+     → logba kerül VID/PID/class/protocol/bcdUSB/numConfigs +
+     interface-enkénti class/protocol/endpoints,
+  5. cleanup: `libusb_close` + `libusb_exit`.
+- Eredmény: bizonyítva, hogy a libusb az **Android usbfs fd-jén
+  keresztül**, **root nélkül** képes a teljes USB descriptor-hierarchiát
+  lekérdezni. Innentől már bármilyen URB submission megoldható
+  (control / bulk / interrupt) — pontosan amit a usb-bridge Fázis 1c-ben
+  is csinál.
+
+**Phase 2b.3 (következő):**
 - A `projects/usb-bridge` C forrásait beépíteni a `libkaliterm_native.so`-ba
-  CMake `add_subdirectory` vagy fájl-szintű inkluzióval.
-- libusb 1.0.27 (FetchContent) az NDK build-be — `libusb_wrap_sys_device`
-  a JNI-ből kapott fd-re.
-- A `nativeAcceptUsbDevice` mostantól a bridge dispatch-loopot indít az
-  fd-re egy worker-szálban, nem zárja le.
+  (CMakeLists `add_subdirectory` vagy fájl-szintű inkluzió).
+- `nativeAcceptUsbDevice` mostantól nem csak descriptor-t probol, hanem
+  egy worker-szálban elindítja a teljes dispatch-loop-ot az fd-re.
+- Compose UI: per-eszköz live state (RX/TX bájtok, hibák).
 
 **Phase 2c:**
 - LKL `liblkl-host-lib.so` prebuilt copy a `kernel-build` artifact-ból
