@@ -15,7 +15,7 @@ alatt fut** — lokálisan nincs futtatás.
 ```
 projects/
   android-app/       # Android (Kotlin + Compose) — teszt app, referencia
-  kernel-build/      # Linux UML kernel build a kaliterm projekthez
+  kernel-build/      # Linux mainline kernel library (LKL) build a kaliterm projekthez
   <új-projekt>/      # további projektek ide jönnek
 .github/workflows/   # projekt-szintű CI munkafolyamatok (path-szűrt triggerek)
 ```
