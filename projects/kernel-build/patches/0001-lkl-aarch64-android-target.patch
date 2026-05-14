@@ -1,0 +1,30 @@
+Subject: [PATCH] tools/lkl/Makefile.autoconf: support aarch64-linux-android24 target
+
+LKL's `llvm_target_to_ld_fmt` macro only knows about `x86_64-linux-gnu`
+and errors out on every other CROSS_COMPILE value, even though the rest
+of `do_autoconf_llvm` (and the downstream POSIX/Android host detection)
+is target-agnostic.
+
+Add a case for `aarch64-linux-android24` so we can build the LKL host
+library against the Android NDK Bionic toolchain. Result is mapped to
+`elf64-littleaarch64`, which `posix_host` already understands and binds
+to `aarch64_host`/`android_host`.
+
+---
+ tools/lkl/Makefile.autoconf | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tools/lkl/Makefile.autoconf b/tools/lkl/Makefile.autoconf
+--- a/tools/lkl/Makefile.autoconf
++++ b/tools/lkl/Makefile.autoconf
+@@ -140,7 +140,8 @@ define do_autoconf_gnu
+ endef
+
+ define llvm_target_to_ld_fmt
+   $(if $(filter $(CROSS_COMPILE),x86_64-linux-gnu),elf64-x86-64,\
+-    $(error Unsupported LLVM target $(CROSS_COMPILE)))
++  $(if $(filter $(CROSS_COMPILE),aarch64-linux-android24),elf64-littleaarch64,\
++    $(error Unsupported LLVM target $(CROSS_COMPILE))))
+ endef
+
+ define do_autoconf_llvm

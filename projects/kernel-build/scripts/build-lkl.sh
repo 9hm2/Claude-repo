@@ -33,8 +33,12 @@ case "${SUBARCH}" in
     # override-dal definiáljuk a változót (felülírja a Makefile `:=` assignmentet).
     # LLVM=1 → llvm-* tool-okat keres prefix nélkül; explicit AR/LD/NM/...
     # megadás minden default fölött győz.
+    # CROSS_COMPILE → LKL `tools/lkl/Makefile.autoconf` ebből deríti a triple-t
+    #   (patches/0001-... után aarch64-linux-android24 már elfogadott).
+    # CLANG_TARGET_FLAGS — a felső szintű kbuild check kedvéért is.
     EXTRA_ARGS+=(
       "LLVM=1"
+      "CROSS_COMPILE=aarch64-linux-android24"
       "CLANG_TARGET_FLAGS=aarch64-linux-android24"
       "CC=${NDK_BIN}/aarch64-linux-android24-clang"
       "HOSTCC=cc"

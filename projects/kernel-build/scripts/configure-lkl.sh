@@ -30,8 +30,14 @@ if [[ "${SUBARCH}" == "android-arm64" ]]; then
   # override-dal felülírjuk a `:=` assignmentet.
   # LLVM=1 → llvm-* tool-ok prefix nélkül; explicit AR/LD/... megadás
   # győz minden default fölött.
+  # CROSS_COMPILE — LKL `tools/lkl/Makefile.autoconf` ezt használja a triple
+  # deriválására és exportálja `CLANG_TARGET_FLAGS_lkl`-be. A felső szintű
+  # kbuild (defconfig step) nem fut tools/lkl autoconfon át, ezért
+  # CLANG_TARGET_FLAGS-t is explicit átadunk, hogy a scripts/Makefile.clang
+  # `add '--target=' option` check átmenjen.
   MAKE_EXTRA+=(
     "LLVM=1"
+    "CROSS_COMPILE=aarch64-linux-android24"
     "CLANG_TARGET_FLAGS=aarch64-linux-android24"
     "CC=${NDK_BIN}/aarch64-linux-android24-clang"
     "HOSTCC=cc"

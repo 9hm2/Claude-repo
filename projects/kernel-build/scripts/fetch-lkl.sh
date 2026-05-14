@@ -32,3 +32,19 @@ fi
 
 echo "[fetch] kész: ${SRC_DIR}"
 ls "${SRC_DIR}/tools/lkl" >/dev/null  # sanity check: LKL fa
+
+# Helyi patch-ek alkalmazása (idempotens: `patch -N` ugorja az alreadyplt-eket).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCHES_DIR="${SCRIPT_DIR}/../patches"
+if [[ -d "${PATCHES_DIR}" ]]; then
+    shopt -s nullglob
+    for p in "${PATCHES_DIR}"/*.patch; do
+        echo "[fetch] patch: $(basename "$p")"
+        if patch -p1 -N --no-backup-if-mismatch -d "${SRC_DIR}" -i "$p" >/dev/null; then
+            echo "[fetch]   alkalmazva"
+        else
+            # `patch -N` 1-et ad ha már alkalmazott — ne dőljön ettől
+            echo "[fetch]   már alkalmazva (vagy nincs változás), folytatás"
+        fi
+    done
+fi
