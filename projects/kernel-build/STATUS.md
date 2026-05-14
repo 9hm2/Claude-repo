@@ -45,11 +45,11 @@ Ez **upstream tény**, nem build-bug. A pivot megkerüli teljesen.
 ## Mostantól
 
 A Fázis 0 új célja: az LKL library lefordul **mindkét host architektúrára**
-(x86_64 + arm64 cross), és az artifact-okat (`liblkl-host-lib.so` + tools)
+(x86_64 + arm64 cross), és az artifact-okat (`liblkl.so` + tools)
 CI feltölti.
 
 **Fázis 0 lezárva**: ✅ mindkét architektúra zöldül a CI-ban, az artifact-ok
-elérhetők. (`liblkl-host-lib.so` + `lklfuse`, `cptofs`, `cpfromfs`.)
+elérhetők. (`liblkl.so` + `lklfuse`, `cptofs`, `cpfromfs`.)
 
 ## Fázis 1a — USB stack bekapcsolva (✅)
 
@@ -87,7 +87,7 @@ A harmadik job az NDK 27.0.12077973-at telepíti `sdkmanager`-rel, majd
 `make lkl-android-arm64`-t futtat — a `scripts/build-lkl.sh` az NDK
 clangot + LLVM tools-t (`llvm-ar`, `ld.lld`, `llvm-strip`, `llvm-nm`,
 `llvm-objcopy`) használ a kbuild minden szintjén. Eredmény:
-`out/android-arm64/liblkl-host-lib.so` — Bionic ABI, ARM64 ELF,
+`out/android-arm64/liblkl.so` — Bionic ABI, ARM64 ELF,
 dinamikusan az Android `libc.so`-ra hivatkozik.
 
 A `kali-term-app` Phase 2c.1-ben **API-szinten előkészítve** van:
@@ -97,14 +97,14 @@ A `kali-term-app` Phase 2c.1-ben **API-szinten előkészítve** van:
 
 A Phase 2c.3 (következő, kali-term-app oldal) a `lkl-android-arm64`
 artifact-ot pull-olja le a kernel.yml legutóbbi sikeres futásából,
-és kimásolja `app/src/main/jniLibs/arm64-v8a/liblkl-host-lib.so`-ba —
+és kimásolja `app/src/main/jniLibs/arm64-v8a/liblkl.so`-ba —
 ezzel az APK install-után az LKL panel automatikusan `LOADED`-re vált.
 
 ## Fázis 2 (következő) — end-to-end összekötés
 
 A `vhci_hcd` és a `kaliterm-usb-bridge` most még külön él. A következő
 lépés a két socket-vég összekötése egy első Android NDK build keretében:
-1. `kali-term-app` JNI-ben elindítjuk az `liblkl-host-lib.so`-t,
+1. `kali-term-app` JNI-ben elindítjuk az `liblkl.so`-t,
    és `vhci_hcd`-t a `usbip_sockfd_store` sysfs attribútumon keresztül
    attach-oljuk az általunk megnyitott socket-pair egyik végéhez.
 2. A másik végét odaadjuk a `kaliterm-usb-bridge`-nek (vagy beágyazva

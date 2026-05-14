@@ -13,9 +13,9 @@ package dev.hm.kaliterm
 object NativeBridge {
 
     /**
-     * Igaz, ha a `liblkl-host-lib.so` az APK-ban benne van és Android
-     * sikeresen be tudja tölteni a kaliterm_native előtt. (A `init` blokk
-     * sorrendje fontos: az LKL .so a kaliterm_native előtt kell.)
+     * Igaz, ha a `liblkl.so` az APK-ban benne van és Android sikeresen be
+     * tudja tölteni a kaliterm_native előtt. (A `init` blokk sorrendje
+     * fontos: az LKL .so a kaliterm_native előtt kell.)
      *
      * Ha hamis, a Phase 2c JNI metódusai `-ENOENT` hibakóddal térnek vissza
      * és a UI is jelzi hogy az LKL nem elérhető.
@@ -23,7 +23,7 @@ object NativeBridge {
     @JvmField
     val lklLibraryLoaded: Boolean = run {
         try {
-            System.loadLibrary("lkl-host-lib")
+            System.loadLibrary("lkl")
             true
         } catch (_: UnsatisfiedLinkError) {
             false

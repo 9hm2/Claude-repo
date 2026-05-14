@@ -6,9 +6,9 @@
  *   1) Az LKL .so jelenleg nincs Android-ARM64-re fordítva (a kernel-build
  *      Bionic-ABI targetet még nem támogat — ld. STATUS.md). Az APK
  *      ezért enélkül épül, és a JNI-réteg "graceful degrade" módban fut:
- *      a Kotlin oldal megpróbálja betölteni System.loadLibrary("lkl-host-lib")-vel,
- *      ha sikerül, a szimbólumok itt resolve-olhatóak; ha nem, mindent
- *      "UNAVAILABLE" jelez vissza.
+ *      a Kotlin oldal megpróbálja betölteni System.loadLibrary("lkl")-lel
+ *      (= liblkl.so), ha sikerül, a szimbólumok itt resolve-olhatóak; ha
+ *      nem, mindent "UNAVAILABLE" jelez vissza.
  *   2) Még akkor is, ha a .so megvan, a CMakeLists.txt nem köti hozzá
  *      build-time, mert a target csak akkor létezik a fájlrendszerben,
  *      ha a kali-term-app CI-step letöltötte a kernel-build artifact-ot.
@@ -80,10 +80,11 @@ static void lkl_resolve_locked(void)
         LOGI("LKL szimbólumok feloldva");
     } else {
         snprintf(g_lkl.status_buf, sizeof(g_lkl.status_buf),
-                 "UNAVAILABLE — nincs liblkl-host-lib.so vagy hiányos.\n"
-                 "Erre lesz szükség a Phase 2c.2-höz: NDK toolchainnel\n"
-                 "fordított LKL library az `app/src/main/jniLibs/arm64-v8a/`\n"
-                 "alá. Részletek: projects/kernel-build/STATUS.md.");
+                 "UNAVAILABLE — liblkl.so betöltve, de a szimbólumok nem\n"
+                 "találhatóak. Lehetséges okok:\n"
+                 "  • a liblkl.so nincs a jniLibs/arm64-v8a/ alatt\n"
+                 "  • régi APK; a CI nem futtatta a kali-term-release-t\n"
+                 "  • az LKL build hiányos (lkl_start_kernel/lkl_host_ops nincs export-álva)");
         LOGW("LKL szimbólumok nem találhatóak (nincs .so)");
     }
 }
