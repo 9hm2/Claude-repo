@@ -1,12 +1,12 @@
 name: kali-term-app
 
 on:
+  # A push trigger minden branch-re fut, path filter szerint — így csak
+  # akkor indul, ha a friss commit ténylegesen érintette ezt a projektet.
+  # A pull_request trigger a teljes PR-diff-et nézi (merge-base óta), nem
+  # az aktuális commit-ot, ami félrevezető rebuild-eket okozna; ezért nem
+  # használjuk.
   push:
-    branches: [main]
-    paths:
-      - 'projects/kali-term-app/**'
-      - '.github/workflows/kali-term-app.yml'
-  pull_request:
     paths:
       - 'projects/kali-term-app/**'
       - '.github/workflows/kali-term-app.yml'

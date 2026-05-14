@@ -1,12 +1,12 @@
 name: Kernel (LKL) build
 
 on:
+  # A push trigger minden branch-re fut, path filter szerint — így csak
+  # akkor indul, ha a friss commit ténylegesen érintette ezt a projektet.
+  # Szándékosan nem használunk pull_request triggert: az a teljes
+  # PR-diff-et nézi a merge-base óta, nem az aktuális commitot, ami
+  # félrevezető rebuild-eket okozna.
   push:
-    branches: [main]
-    paths:
-      - 'projects/kernel-build/**'
-      - '.github/workflows/kernel.yml'
-  pull_request:
     paths:
       - 'projects/kernel-build/**'
       - '.github/workflows/kernel.yml'

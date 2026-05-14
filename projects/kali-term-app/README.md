@@ -25,7 +25,7 @@ Ez kapcsolja össze a többi komponenst:
 
 ## Fejlesztési állapot
 
-**Phase 2a — skeleton (jelen állapot):**
+**Phase 2a — skeleton (kész):**
 - Gradle/Compose projektszerkezet, `dev.hm.kaliterm`
 - CMake-alapú natív build (`libkaliterm_native.so`)
 - Egyszerű JNI stub (`nativeHello`, `nativeVersion`) — bizonyítja hogy a
@@ -33,12 +33,24 @@ Ez kapcsolja össze a többi komponenst:
 - Compose home-screen: app név + natív string + build verzió
 - CI workflow APK artifact-tal
 
-**Phase 2b (következő):**
-- UsbManager device discovery + permission UI
+**Phase 2b.1 — UsbManager UI + FD átadás JNI-n (jelen állapot):**
+- `UsbController` osztály: device discovery (`UsbManager.deviceList`),
+  per-eszköz permission (`PendingIntent` + `BroadcastReceiver`),
+  `openDevice()` után az `fileDescriptor`-t átadja a natív rétegnek.
+- Compose UI: USB eszközök listája, per-card `Engedély` / `Attach` gomb,
+  utolsó attach-log szöveg.
+- `nativeAcceptUsbDevice(fd, vid, pid, ...)` JNI metódus: `fstat`-tal
+  ellenőrzi hogy érvényes karaktereszköz-fd, `__android_log_print`-tel
+  logol, majd egyelőre `close`-olja.
+- Manifest: `android.hardware.usb.host` deklarálva (`required=false`).
+
+**Phase 2b.2 (következő):**
 - A `projects/usb-bridge` C forrásait beépíteni a `libkaliterm_native.so`-ba
-- libusb prebuilt Android-ra (vagy build CMake-ből)
-- JNI metódus: `attachUsbDevice(fd, busid)` — UsbManager fd-t lemásol és
-  továbbít a bridge dispatch loop-jának
+  CMake `add_subdirectory` vagy fájl-szintű inkluzióval.
+- libusb 1.0.27 (FetchContent) az NDK build-be — `libusb_wrap_sys_device`
+  a JNI-ből kapott fd-re.
+- A `nativeAcceptUsbDevice` mostantól a bridge dispatch-loopot indít az
+  fd-re egy worker-szálban, nem zárja le.
 
 **Phase 2c:**
 - LKL `liblkl-host-lib.so` prebuilt copy a `kernel-build` artifact-ból
