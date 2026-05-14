@@ -1,4 +1,4 @@
-name: Kernel (UML) build
+name: Kernel (LKL) build
 
 on:
   push:
@@ -18,7 +18,7 @@ defaults:
 
 jobs:
   x86_64:
-    name: UM build (x86_64 host)
+    name: LKL build (x86_64 host)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,31 +28,50 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libssl-dev libelf-dev \
-            xz-utils ca-certificates curl
+            xz-utils ca-certificates curl git pkg-config
 
-      - name: Cache kernel tarball
-        uses: actions/cache@v4
-        with:
-          path: projects/kernel-build/build/*.tar.xz
-          key: kernel-tarball-${{ hashFiles('projects/kernel-build/KERNEL_VERSION') }}
-
-      - name: Build UML kernel (x86_64)
-        run: make um-x86_64
+      - name: Build LKL library (x86_64)
+        run: make lkl-x86_64
 
       - name: Inspect output
         run: |
-          file out/x86_64/linux-um
-          ls -lh out/x86_64/linux-um
+          ls -lh out/x86_64/
+          file out/x86_64/* || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-um-x86_64
-          path: projects/kernel-build/out/x86_64/linux-um
+          name: lkl-x86_64
+          path: projects/kernel-build/out/x86_64/
           if-no-files-found: error
 
-  # ARM64 host UML build job: szándékosan kihagyva.
-  # Indok: a Linux mainline 6.12 LTS-ben nincs `arch/arm64/Makefile.um`,
-  # tehát az ARM64 host UML upstream nem létezik. Ez az architektúra
-  # alapköve, ezért külön döntést igényel — ld. projects/kernel-build/STATUS.md.
-  # Várható feloldási opciók: LKL pivot, vagy out-of-tree ARM64 UM patch-sorozat.
+  arm64:
+    name: LKL build (arm64 cross)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies (incl. arm64 cross toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            xz-utils ca-certificates curl git pkg-config \
+            gcc-aarch64-linux-gnu
+
+      - name: Build LKL library (arm64 host cross)
+        env:
+          CROSS_COMPILE: aarch64-linux-gnu-
+        run: make lkl-arm64
+
+      - name: Inspect output
+        run: |
+          ls -lh out/arm64/
+          file out/arm64/* || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lkl-arm64
+          path: projects/kernel-build/out/arm64/
+          if-no-files-found: error

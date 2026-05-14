@@ -1,0 +1,12 @@
+# Linux Kernel Library (LKL) — github.com/lkl/linux
+#
+# LKL a mainline Linux kernelt egy userspace library-vé fordítja, az
+# `arch/lkl/` hoszt-architektúra alatt. ARM64 első osztályú cél — natívan
+# cross-compile-elhető, nincs hiányzó host-port.
+#
+# Pin: jelenleg `master` (Fázis 0 — bootstrap). Egyszer egy konkrét működő
+# revízió tudunk pin-elni LKL_REVISION_COMMIT-tel.
+
+LKL_REPO=https://github.com/lkl/linux.git
+LKL_BRANCH=master
+LKL_REVISION_COMMIT=

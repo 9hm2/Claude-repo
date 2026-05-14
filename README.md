@@ -8,7 +8,7 @@ alatt fut** — lokálisan nincs futtatás.
 | Projekt | Stack | Státusz |
 | --- | --- | --- |
 | [`projects/android-app`](projects/android-app) | Kotlin · Jetpack Compose · AGP 8.8 · target SDK 36 | Teszt app (`dev.hm.app`) — referencia scaffold |
-| [`projects/kernel-build`](projects/kernel-build) | Linux mainline · UML · GCC/cross-compile | Userspace Kali terminál — UML kernel build (Fázis 0) |
+| [`projects/kernel-build`](projects/kernel-build) | Linux mainline · LKL · GCC/cross-compile | Userspace Kali terminál — LKL kernel library build (Fázis 0) |
 
 ## Struktúra
 
