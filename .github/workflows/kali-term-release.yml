@@ -1,0 +1,143 @@
+name: kali-term release
+
+# Két jobban összefűzött pipeline:
+#   1) lkl-android  → mainline Linux kernel forrásból Bionic-ABI ARM64
+#                     liblkl*.so / tool binárik (NDK aarch64-android24-clang).
+#   2) apk          → ugyanezen run artifact-jából letölti az .so-kat
+#                     a jniLibs/arm64-v8a/-ba, tools a assets/-be; majd
+#                     a Compose/NDK APK build (lint, test, assembleDebug).
+#
+# Ezzel a sorrenddel az APK MINDIG a friss LKL-lel épül; nincs cross-workflow
+# verseny vagy stale artifact-választás.
+
+on:
+  push:
+    paths:
+      - 'projects/kernel-build/**'
+      - 'projects/kali-term-app/**'
+      - 'projects/usb-bridge/**'
+      - '.github/workflows/kali-term-release.yml'
+  workflow_dispatch:
+
+jobs:
+  # ── 1. LKL Android Bionic build ───────────────────────────────────────
+  lkl-android:
+    name: LKL build (android arm64, Bionic)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: projects/kernel-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            xz-utils ca-certificates curl git pkg-config
+
+      - name: Install Android NDK 27.0.12077973
+        run: |
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: Build LKL (NDK aarch64-linux-android24-clang)
+        run: make lkl-android-arm64
+
+      - name: Inspect output
+        run: |
+          find out/android-arm64 -type f -exec ls -lh {} +
+          shopt -s nullglob
+          for f in out/android-arm64/lib/*.so; do
+            echo "--- readelf -d $f ---"
+            "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$f" | head -20 || true
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lkl-android-arm64
+          path: projects/kernel-build/out/android-arm64/
+          if-no-files-found: error
+
+  # ── 2. APK build (LKL bundled-velvel) ─────────────────────────────────
+  apk:
+    name: APK build (with LKL bundled)
+    needs: lkl-android
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: projects/kali-term-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Install Android NDK + CMake
+        run: |
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null
+          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: Download LKL artifact (from this workflow run)
+        uses: actions/download-artifact@v4
+        with:
+          name: lkl-android-arm64
+          path: /tmp/lkl-android-arm64
+
+      - name: Place LKL .so → jniLibs, tool ELF-ek → assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          JNILIB_DIR="app/src/main/jniLibs/arm64-v8a"
+          ASSETS_DIR="app/src/main/assets/lkl/arm64-v8a"
+          mkdir -p "$JNILIB_DIR" "$ASSETS_DIR"
+
+          shopt -s nullglob
+          if [[ -d /tmp/lkl-android-arm64/lib ]]; then
+            for f in /tmp/lkl-android-arm64/lib/*.so; do
+              cp -v "$f" "$JNILIB_DIR/"
+            done
+          fi
+          if [[ -d /tmp/lkl-android-arm64/bin ]]; then
+            for f in /tmp/lkl-android-arm64/bin/*; do
+              cp -v "$f" "$ASSETS_DIR/"
+            done
+          fi
+
+          echo "jniLibs ($JNILIB_DIR):"
+          ls -lh "$JNILIB_DIR" || true
+          if compgen -G "$ASSETS_DIR/*" >/dev/null; then
+            echo "assets ($ASSETS_DIR):"
+            ls -lh "$ASSETS_DIR"
+          fi
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Lint
+        run: ./gradlew lint --stacktrace
+
+      - name: Unit tests
+        run: ./gradlew test --stacktrace
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaliterm-debug-apk
+          path: projects/kali-term-app/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
