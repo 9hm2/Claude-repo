@@ -246,6 +246,7 @@ make -C "${PROOT_SRC}" -j"$(nproc)" \
     LD="${LD}" \
     AR="${AR}" \
     OBJCOPY="${OBJCOPY}" \
+    STRIP="${NDK_BIN}/llvm-strip" \
     HOST_CC="cc" \
     CFLAGS="-O2 ${TALLOC_INCLUDE_FLAG} -DGIT_VERSION=\"v${PROOT_VERSION}\"" \
     LDFLAGS="-L${TALLOC_OUT} -ltalloc -static-libgcc" \
