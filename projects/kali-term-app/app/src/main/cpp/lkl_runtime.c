@@ -27,11 +27,13 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <arpa/inet.h>   /* htonl, ntohl — USBIP wire-format byte order */
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <libusb.h>
@@ -310,6 +312,16 @@ static void probe_kernel_into(char *buf, size_t bufsz)
     g_probe_counter++;
     APPEND("probe #%u\n", g_probe_counter);
 
+    /* URB bridge állapot (Phase 2c.5d). */
+    pthread_mutex_lock(&g_bridge.lock);
+    if (g_bridge.active) {
+        APPEND("URB bridge: AKTÍV — devid=%08x  URBs=%u  errs=%u\n",
+               g_bridge.devid, g_bridge.n_urbs, g_bridge.n_errors);
+    } else {
+        APPEND("URB bridge: leállt (nincs aktív device)\n");
+    }
+    pthread_mutex_unlock(&g_bridge.lock);
+
     /* /proc mount (idempotens). */
     long m = lkl_mount_once("proc", "/proc", "proc");
     if (m < 0) {
@@ -352,6 +364,387 @@ static void probe_kernel_into(char *buf, size_t bufsz)
         }
     }
     #undef APPEND
+}
+
+/* ── Phase 2c.5d: host-oldali URB-dispatch (USB/IP protokoll) ──────────
+ *
+ * A vhci_hcd a kernelben USB/IP protokollt beszél a `sv[0]` socket-en;
+ * mi `sv[1]`-en (LKL fd) keresztül olvasunk/írunk lkl_syscall-okkal.
+ * Minden URB-kérés egy 48-byte header (`struct usbip_header`, mind
+ * BIG-ENDIAN a wire-on) + opcionális adat:
+ *
+ *   OUT (host → device):  CMD_SUBMIT + payload_bytes
+ *                          → libusb_*_transfer   → RET_SUBMIT
+ *   IN  (device → host):  CMD_SUBMIT
+ *                          → libusb_*_transfer  → RET_SUBMIT + payload_bytes
+ *
+ * Sync libusb-API-t használunk (libusb_control_transfer / libusb_bulk_transfer
+ * / libusb_interrupt_transfer). Egyszerre egy URB van folyamatban — soros
+ * feldolgozás. HID/serial/BT/low-bandwidth bulk működik; folyamatos
+ * monitor-mode Wi-Fi-hez aszinkron submit kellene (későbbi fejlesztés).
+ *
+ * SET_ADDRESS fake-elés: az Android USB stack már enumerálta az eszközt és
+ * címet adott neki. A vhci_hcd újra-enumerál és SET_ADDRESS-t küld — ezt
+ * mi NEM továbbítjuk az eszköznek (különben Android oldal megzavarodik),
+ * csak success-status-szal válaszolunk vissza. Ezt az stub_dev.c (usbip
+ * server) is így csinálja.
+ */
+
+#define USBIP_CMD_SUBMIT   0x00000001u
+#define USBIP_CMD_UNLINK   0x00000002u
+#define USBIP_RET_SUBMIT   0x00000003u
+#define USBIP_RET_UNLINK   0x00000004u
+
+#define USBIP_DIR_OUT      0u
+#define USBIP_DIR_IN       1u
+
+/* 48-byte fix header. Minden multi-byte mező BIG-ENDIAN a sv[1] wire-on.
+ * Layout pontos egyezésben a kernelbeli `struct usbip_header`-rel
+ * (drivers/usb/usbip/usbip_common.h). */
+#pragma pack(push, 1)
+struct usbip_hdr {
+    /* base — 20 byte */
+    uint32_t command;
+    uint32_t seqnum;
+    uint32_t devid;
+    uint32_t direction;
+    uint32_t ep;
+    /* union — 28 byte (header total = 48) */
+    union {
+        struct {
+            uint32_t transfer_flags;
+            int32_t  transfer_buffer_length;
+            int32_t  start_frame;
+            int32_t  number_of_packets;
+            int32_t  interval;
+            uint8_t  setup[8];   /* USB setup packet — little-endian per USB spec */
+        } cmd_submit;
+        struct {
+            int32_t status;
+            int32_t actual_length;
+            int32_t start_frame;
+            int32_t number_of_packets;
+            int32_t error_count;
+            uint8_t padding[8];
+        } ret_submit;
+        struct {
+            uint32_t target_seqnum;
+            uint8_t  padding[24];
+        } cmd_unlink;
+        struct {
+            int32_t  status;
+            uint8_t  padding[24];
+        } ret_unlink;
+    } u;
+};
+#pragma pack(pop)
+_Static_assert(sizeof(struct usbip_hdr) == 48, "USB/IP header must be 48 bytes");
+
+/* URB-bridge globális állapot: pillanatnyilag csak egy eszközt támogatunk. */
+static struct {
+    pthread_mutex_t lock;
+    int             active;        /* 1 = worker fut */
+    pthread_t       thread;
+    libusb_context       *ctx;
+    libusb_device_handle *handle;
+    int             dup_fd;        /* a libusb_wrap_sys_device-nak adott fd */
+    int             sv_kern;       /* sv[0] — a vhci_hcd kernel-threadé */
+    int             sv_user;       /* sv[1] — a saját oldalunk (LKL-fd) */
+    uint32_t        devid;
+    uint32_t        n_urbs;        /* feldolgozott URB-ek (diag) */
+    uint32_t        n_errors;
+    /* Endpoint type cache: index = (addr & 0x0F) | ((addr & 0x80) >> 3),
+     * 0..31. Érték: LIBUSB_TRANSFER_TYPE_* (0=control, 1=iso, 2=bulk, 3=int). */
+    uint8_t         ep_type[32];
+} g_bridge = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static int ep_index(uint8_t addr)
+{
+    /* OUT (0x00..0x0F) → 0..15, IN (0x80..0x8F) → 16..31 */
+    return (addr & 0x0F) | ((addr & 0x80) >> 3);
+}
+
+/* Felépíti az endpoint-típus táblát a device aktív config-descriptor-ából,
+ * és claimol-ja az összes interface-t a libusb-handle-on. Bulk/interrupt
+ * transferhez a libusb-nek claim_interface kell — control mindig megy. */
+static void cache_endpoints(libusb_device_handle *h)
+{
+    memset(g_bridge.ep_type, LIBUSB_TRANSFER_TYPE_BULK, sizeof(g_bridge.ep_type));
+    /* EP0 mindkét irányban control. */
+    g_bridge.ep_type[ep_index(0x00)] = LIBUSB_TRANSFER_TYPE_CONTROL;
+    g_bridge.ep_type[ep_index(0x80)] = LIBUSB_TRANSFER_TYPE_CONTROL;
+
+    /* Best-effort: ha a kernel-driver lefogta volna az interface-eket, a
+     * libusb maga detach-olja a claim előtt. Android stock kernelnél ezt
+     * usbfs nem feltétlenül engedi — innen jöhet hiba; csak loggoljuk. */
+    libusb_set_auto_detach_kernel_driver(h, 1);
+
+    libusb_device *dev = libusb_get_device(h);
+    struct libusb_config_descriptor *cfg = NULL;
+    if (!dev || libusb_get_active_config_descriptor(dev, &cfg) != 0 || !cfg) return;
+
+    for (int i = 0; i < cfg->bNumInterfaces; i++) {
+        int crc = libusb_claim_interface(h, i);
+        if (crc < 0) LOGW("claim_interface(%d): %s", i, libusb_strerror(crc));
+
+        const struct libusb_interface *iface = &cfg->interface[i];
+        for (int j = 0; j < iface->num_altsetting; j++) {
+            const struct libusb_interface_descriptor *intf = &iface->altsetting[j];
+            for (int k = 0; k < intf->bNumEndpoints; k++) {
+                const struct libusb_endpoint_descriptor *ep = &intf->endpoint[k];
+                int idx = ep_index(ep->bEndpointAddress);
+                g_bridge.ep_type[idx] = ep->bmAttributes & 0x03;
+            }
+        }
+    }
+    libusb_free_config_descriptor(cfg);
+}
+
+/* Pontosan n byte-ot olvas egy LKL fd-ről. partial-read short-pollon kívül
+ * újrahív; 0 vagy negatív rc-re hibát ad vissza. */
+static int lkl_read_exact(int fd, void *buf, size_t n)
+{
+    size_t off = 0;
+    while (off < n) {
+        long r = lkl_call(LKL_NR_read, fd,
+                          (long)(intptr_t)((char *)buf + off),
+                          (long)(n - off), 0, 0);
+        if (r == 0) return -1;          /* EOF — kernel zárta sv[0]-t */
+        if (r < 0) return (int)r;
+        off += (size_t)r;
+    }
+    return 0;
+}
+
+static int lkl_write_exact(int fd, const void *buf, size_t n)
+{
+    size_t off = 0;
+    while (off < n) {
+        long r = lkl_call(LKL_NR_write, fd,
+                          (long)(intptr_t)((const char *)buf + off),
+                          (long)(n - off), 0, 0);
+        if (r <= 0) return (int)(r ? r : -1);
+        off += (size_t)r;
+    }
+    return 0;
+}
+
+/* USB/IP header byte-swap (network → host) — a base + a parancstól függő
+ * union mezők. setup[8] változatlan (USB spec szerint little-endian). */
+static void hdr_ntoh(struct usbip_hdr *h)
+{
+    h->command   = ntohl(h->command);
+    h->seqnum    = ntohl(h->seqnum);
+    h->devid     = ntohl(h->devid);
+    h->direction = ntohl(h->direction);
+    h->ep        = ntohl(h->ep);
+    if (h->command == USBIP_CMD_SUBMIT) {
+        h->u.cmd_submit.transfer_flags         = ntohl(h->u.cmd_submit.transfer_flags);
+        h->u.cmd_submit.transfer_buffer_length = (int32_t)ntohl((uint32_t)h->u.cmd_submit.transfer_buffer_length);
+        h->u.cmd_submit.start_frame            = (int32_t)ntohl((uint32_t)h->u.cmd_submit.start_frame);
+        h->u.cmd_submit.number_of_packets      = (int32_t)ntohl((uint32_t)h->u.cmd_submit.number_of_packets);
+        h->u.cmd_submit.interval               = (int32_t)ntohl((uint32_t)h->u.cmd_submit.interval);
+    } else if (h->command == USBIP_CMD_UNLINK) {
+        h->u.cmd_unlink.target_seqnum = ntohl(h->u.cmd_unlink.target_seqnum);
+    }
+}
+
+static void build_ret_submit(struct usbip_hdr *out, const struct usbip_hdr *cmd,
+                             int status, int actual_length)
+{
+    memset(out, 0, sizeof(*out));
+    out->command   = htonl(USBIP_RET_SUBMIT);
+    out->seqnum    = htonl(cmd->seqnum);
+    out->devid     = htonl(cmd->devid);
+    out->direction = htonl(cmd->direction);
+    out->ep        = htonl(cmd->ep);
+    out->u.ret_submit.status        = (int32_t)htonl((uint32_t)status);
+    out->u.ret_submit.actual_length = (int32_t)htonl((uint32_t)actual_length);
+}
+
+static void build_ret_unlink(struct usbip_hdr *out, const struct usbip_hdr *cmd,
+                             int status)
+{
+    memset(out, 0, sizeof(*out));
+    out->command   = htonl(USBIP_RET_UNLINK);
+    out->seqnum    = htonl(cmd->seqnum);
+    out->devid     = htonl(cmd->devid);
+    out->direction = htonl(cmd->direction);
+    out->ep        = htonl(cmd->ep);
+    out->u.ret_unlink.status = (int32_t)htonl((uint32_t)status);
+}
+
+/* libusb hiba → Linux errno (negatív). A vhci_hcd ezt az URB->status-ba teszi. */
+static int libusb_err_to_errno(int rc)
+{
+    switch (rc) {
+        case LIBUSB_SUCCESS:             return 0;
+        case LIBUSB_ERROR_TIMEOUT:       return -110; /* -ETIMEDOUT */
+        case LIBUSB_ERROR_PIPE:          return -32;  /* -EPIPE (STALL) */
+        case LIBUSB_ERROR_NO_DEVICE:     return -19;  /* -ENODEV */
+        case LIBUSB_ERROR_OVERFLOW:      return -75;  /* -EOVERFLOW */
+        case LIBUSB_ERROR_INTERRUPTED:   return -4;   /* -EINTR */
+        case LIBUSB_ERROR_NO_MEM:        return -12;  /* -ENOMEM */
+        case LIBUSB_ERROR_ACCESS:        return -13;  /* -EACCES */
+        case LIBUSB_ERROR_NOT_FOUND:     return -2;   /* -ENOENT */
+        case LIBUSB_ERROR_BUSY:          return -16;  /* -EBUSY */
+        case LIBUSB_ERROR_IO:            return -5;   /* -EIO */
+        default:                         return -71;  /* -EPROTO */
+    }
+}
+
+/* Egy USB/IP URB feldolgozása. Visszaad: 0 = OK, <0 = fatal (worker exit). */
+static int dispatch_one_urb(struct usbip_hdr *cmd, libusb_device_handle *h)
+{
+    const int is_out = (cmd->direction == USBIP_DIR_OUT);
+    const uint8_t ep_addr = (cmd->ep & 0x0F) | (is_out ? 0 : 0x80);
+    const int idx = ep_index(ep_addr);
+    const int xfer_type = g_bridge.ep_type[idx];
+    const int xfer_len = cmd->u.cmd_submit.transfer_buffer_length;
+
+    /* Sanity — max 1 MB egy URB, hogy egy hibás kérés ne raballion memóriát. */
+    if (xfer_len < 0 || xfer_len > (1 << 20)) return -1;
+
+    uint8_t *buf = NULL;
+    if (xfer_len > 0) {
+        buf = (uint8_t *)malloc((size_t)xfer_len);
+        if (!buf) return -1;
+        if (is_out) {
+            if (lkl_read_exact(g_bridge.sv_user, buf, (size_t)xfer_len) < 0) {
+                free(buf); return -1;
+            }
+        }
+    }
+
+    int status = 0, actual = 0, rc;
+
+    if (xfer_type == LIBUSB_TRANSFER_TYPE_CONTROL) {
+        const uint8_t *s = cmd->u.cmd_submit.setup;
+        uint8_t  bmRequestType = s[0];
+        uint8_t  bRequest      = s[1];
+        uint16_t wValue        = (uint16_t)(s[2] | ((uint16_t)s[3] << 8));
+        uint16_t wIndex        = (uint16_t)(s[4] | ((uint16_t)s[5] << 8));
+        uint16_t wLength       = (uint16_t)(s[6] | ((uint16_t)s[7] << 8));
+
+        /* SET_ADDRESS és SET_CONFIGURATION fake-elés — Android USB stack már
+         * enumerálta és konfigurálta a device-t. A vhci_hcd újra-enumeráláskor
+         * mindkettőt elküldi; ha mi valóban továbbítanánk, az Android-oldali
+         * state megszakadna (vagy a libusb -EBUSY-val visszadobná, mert az
+         * interface-eket már claim-eltük). bRequest=5 = SET_ADDRESS,
+         * bRequest=9 = SET_CONFIGURATION; mindkettő bmRequestType=0x00 (std,
+         * host→dev, recipient=device). Success no-op a sztub-szerű hozzáállás
+         * — pont ezt csinálja a stub_dev.c is a usbip-szerveren. */
+        if (bmRequestType == 0x00 && (bRequest == 0x05 || bRequest == 0x09)) {
+            status = 0; actual = 0;
+        } else {
+            rc = libusb_control_transfer(h, bmRequestType, bRequest,
+                                          wValue, wIndex, buf, wLength, 5000);
+            if (rc >= 0) { status = 0; actual = rc; }
+            else         { status = libusb_err_to_errno(rc); actual = 0; }
+        }
+    } else if (xfer_type == LIBUSB_TRANSFER_TYPE_INTERRUPT) {
+        rc = libusb_interrupt_transfer(h, ep_addr, buf, xfer_len, &actual, 5000);
+        status = (rc == 0) ? 0 : libusb_err_to_errno(rc);
+    } else {
+        /* BULK (és default fallback) */
+        rc = libusb_bulk_transfer(h, ep_addr, buf, xfer_len, &actual, 5000);
+        status = (rc == 0) ? 0 : libusb_err_to_errno(rc);
+    }
+
+    /* Válasz: RET_SUBMIT header + (IN esetén) actual byte adat. */
+    struct usbip_hdr ret;
+    build_ret_submit(&ret, cmd, status, actual);
+    if (lkl_write_exact(g_bridge.sv_user, &ret, sizeof(ret)) < 0) {
+        free(buf); return -1;
+    }
+    if (!is_out && actual > 0) {
+        if (lkl_write_exact(g_bridge.sv_user, buf, (size_t)actual) < 0) {
+            free(buf); return -1;
+        }
+    }
+    free(buf);
+    return 0;
+}
+
+static void *urb_worker(void *arg)
+{
+    (void)arg;
+    int sv1 = g_bridge.sv_user;
+    libusb_device_handle *h = g_bridge.handle;
+    LOGI("URB worker started: sv_user=%d devid=%08x", sv1, g_bridge.devid);
+
+    while (1) {
+        struct usbip_hdr cmd;
+        if (lkl_read_exact(sv1, &cmd, sizeof(cmd)) < 0) break;
+        hdr_ntoh(&cmd);
+
+        if (cmd.command == USBIP_CMD_SUBMIT) {
+            if (dispatch_one_urb(&cmd, h) < 0) {
+                g_bridge.n_errors++;
+                break;
+            }
+            g_bridge.n_urbs++;
+        } else if (cmd.command == USBIP_CMD_UNLINK) {
+            /* Sync model: az URB már lefutott (vagy futtatás alatt blokkol);
+             * sikeres unlink-et jelzünk vissza. A status -2/-ENOENT = "az
+             * URB már nem található", ez a stub_dev semantika. */
+            struct usbip_hdr ret;
+            build_ret_unlink(&ret, &cmd, -2);
+            if (lkl_write_exact(sv1, &ret, sizeof(ret)) < 0) break;
+        } else {
+            LOGW("URB worker: ismeretlen command=%u, exit", cmd.command);
+            break;
+        }
+    }
+
+    LOGI("URB worker exit: n_urbs=%u n_errors=%u", g_bridge.n_urbs, g_bridge.n_errors);
+
+    /* Cleanup — a bridge thread tulajdona a libusb resources. */
+    pthread_mutex_lock(&g_bridge.lock);
+    if (g_bridge.handle) { libusb_close(g_bridge.handle); g_bridge.handle = NULL; }
+    if (g_bridge.ctx)    { libusb_exit(g_bridge.ctx);     g_bridge.ctx    = NULL; }
+    g_bridge.dup_fd  = -1;
+    g_bridge.sv_user = -1;
+    g_bridge.sv_kern = -1;
+    g_bridge.active  = 0;
+    pthread_mutex_unlock(&g_bridge.lock);
+    return NULL;
+}
+
+/* Az attach végén meghívva: átveszi a libusb erőforrásokat és spawnol egy
+ * detached worker thread-et. Sikerre 0-t ad, hiba esetén negatív értéket
+ * (és a hívó NEM-transferred erőforrásokat ő zárja). */
+static int start_urb_bridge(libusb_context *ctx, libusb_device_handle *h,
+                            int dup_fd, int sv_kern, int sv_user, uint32_t devid)
+{
+    pthread_mutex_lock(&g_bridge.lock);
+    if (g_bridge.active) {
+        pthread_mutex_unlock(&g_bridge.lock);
+        return -16; /* -EBUSY — már fut egy bridge */
+    }
+    g_bridge.ctx      = ctx;
+    g_bridge.handle   = h;
+    g_bridge.dup_fd   = dup_fd;
+    g_bridge.sv_kern  = sv_kern;
+    g_bridge.sv_user  = sv_user;
+    g_bridge.devid    = devid;
+    g_bridge.n_urbs   = 0;
+    g_bridge.n_errors = 0;
+    g_bridge.active   = 1;
+
+    cache_endpoints(h);
+
+    pthread_t tid;
+    int prc = pthread_create(&tid, NULL, urb_worker, NULL);
+    if (prc != 0) {
+        g_bridge.active = 0;
+        pthread_mutex_unlock(&g_bridge.lock);
+        return -prc;
+    }
+    g_bridge.thread = tid;
+    pthread_detach(tid);
+    pthread_mutex_unlock(&g_bridge.lock);
+    return 0;
 }
 
 /* ── JNI ─────────────────────────────────────────────────────────────── */
@@ -624,21 +1017,33 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
                 long w = lkl_call(LKL_NR_write, sysfs, (long)(intptr_t)cmd,
                                   (long)n, 0, 0);
                 APPEND("attach write \"%s\" (%d byte) → rc=%ld\n", cmd, n, w);
+                lkl_close(sysfs);
                 if (w == n) {
                     APPEND("✓ vhci_hcd kernel-thread elindítva (URB-eket vár).\n");
-                    APPEND("Phase 2c.5d (follow-up): host-side URB-dispatch loop\n"
-                           "a sv[1] LKL-fd-n keresztül → libusb_submit_transfer.\n");
+                    /* Phase 2c.5d — host-oldali URB-dispatch worker indítása.
+                     * Innentől a worker birtokolja a libusb-erőforrásokat;
+                     * NE zárjuk a függvény végén. */
+                    int brc = start_urb_bridge(ctx, handle, dup_fd,
+                                                sv[0], sv[1], devid);
+                    if (brc == 0) {
+                        APPEND("✓ URB dispatch worker elindítva (sync mode)\n");
+                        ctx = NULL;       /* tulajdonjog a worker-é */
+                        handle = NULL;
+                        dup_fd = -1;
+                    } else {
+                        APPEND("URB worker indítás hiba: rc=%d\n", brc);
+                    }
                 }
-                lkl_close(sysfs);
             }
         }
     }
 
-    /* Cleanup — ezt egyelőre szándékosan megtesszük, mert nincs még
-     * dispatch loop. Phase 2c.5d-ben a bridge-state életben kell hogy
-     * maradjon, és csak detach-kor zárjuk. */
-    libusb_close(handle);  /* zárja a dup_fd-t */
-    libusb_exit(ctx);
+    /* Cleanup — csak akkor, ha NEM adtuk át az erőforrásokat a worker-nek
+     * (= a bridge start nem sikerült, vagy az attach valami korábbi
+     * lépésen elbukott). A `dup_fd`-t a `libusb_wrap_sys_device` óta a
+     * libusb birtokolja; libusb_close zárja. */
+    if (handle) libusb_close(handle);
+    if (ctx)    libusb_exit(ctx);
 
     #undef APPEND
     return (*env)->NewStringUTF(env, out);
