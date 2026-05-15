@@ -292,6 +292,49 @@ static void lkl_list_dir_into(char **pp, char *end, const char *path)
     *pp = p;
 }
 
+/* Mint a fenti, de csak azokat az entryket írja ki, amelyek valamelyik
+ * `prefixes[]` (NULL-terminated) prefix-szel kezdődnek. A többit megszámolja
+ * és összesítve mutatja, hogy a háttér-zaj (pl. legacy BSD pty-k) ne öntse
+ * el a kimenetet. */
+static void lkl_list_dir_filtered(char **pp, char *end, const char *path,
+                                   const char *const prefixes[])
+{
+    char *p = *pp;
+    #define A(...) do { if (p < end) p += snprintf(p, end - p, __VA_ARGS__); } while(0)
+    long fd = lkl_open(path, LKL_O_RDONLY);
+    if (fd < 0) { A("  (open %s rc=%ld)\n", path, fd); *pp = p; return; }
+    char dirbuf[2048];
+    int matched = 0, skipped = 0, loops = 0;
+    while (loops++ < 16) {
+        long bytes = lkl_call(LKL_NR_getdents64, fd,
+                              (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
+        if (bytes <= 0) break;
+        long off = 0;
+        while (off < bytes) {
+            struct lkl_linux_dirent64 *d =
+                (struct lkl_linux_dirent64 *)(dirbuf + off);
+            const char *name = d->d_name;
+            if (!(name[0] == '.' && (name[1] == '\0' ||
+                  (name[1] == '.' && name[2] == '\0')))) {
+                int hit = 0;
+                for (const char *const *q = prefixes; *q; q++) {
+                    size_t plen = strlen(*q);
+                    if (strncmp(name, *q, plen) == 0) { hit = 1; break; }
+                }
+                if (hit) { A("  %s\n", name); matched++; }
+                else     { skipped++; }
+            }
+            off += d->d_reclen;
+            if (d->d_reclen == 0) break;
+        }
+    }
+    if (matched == 0) A("  (egyetlen érdekes entry sem)\n");
+    if (skipped > 0)  A("  (+ %d további — pl. legacy pty)\n", skipped);
+    lkl_close(fd);
+    #undef A
+    *pp = p;
+}
+
 /* URB-bridge globális állapot: pillanatnyilag csak egy eszközt támogatunk.
  *
  * Forward-declarjuk itt (a probe_kernel_into ezt használja a Frissít-en
@@ -420,9 +463,20 @@ static void probe_kernel_into(char *buf, size_t bufsz)
     }
 
     /* /sys/class/tty/ — ha ftdi_sio/ch341/cp210x/pl2303 bekötődött,
-     * ttyUSB0, ttyUSB1, stb. jelennek meg itt. */
-    APPEND("/sys/class/tty/:\n");
-    lkl_list_dir_into(&p, end, "/sys/class/tty");
+     * ttyUSB0, ttyUSB1, stb. jelennek meg itt. A legacy BSD pty-ket (ttya0,
+     * ptyc1, stb. — több száz darab van belőlük) kiszűrjük; csak a valódi
+     * érdekes serial node-okat mutatjuk. */
+    {
+        static const char *const tty_prefixes[] = {
+            "ttyUSB",   /* USB serial (ftdi_sio, ch341, cp210x, pl2303) */
+            "ttyACM",   /* USB CDC-ACM (modem-class) */
+            "ttyS",     /* hagyományos serial port (8250, 16550 — LKL-ben nincs) */
+            "console",  /* kernel console */
+            NULL,
+        };
+        APPEND("/sys/class/tty/:\n");
+        lkl_list_dir_filtered(&p, end, "/sys/class/tty", tty_prefixes);
+    }
 
     /* /sys/class/hidraw/ — ha usbhid + hidraw bekötődött (HID device-okhoz). */
     {
@@ -830,7 +884,7 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStatus(JNIEnv *env, jobject thiz)
         g_lkl.running    ? "YES"                            :
                            "no";
 
-    char out[3072];
+    char out[6144];
     int n = snprintf(out, sizeof(out), "%s\nrunning = %s",
                      g_lkl.status_buf, running_state);
 
@@ -839,7 +893,7 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStatus(JNIEnv *env, jobject thiz)
      * Ezzel látszik a UI-ban, hogy a Linux kernel valóban fut és
      * filesystem-syscalls működnek a `lkl_syscall` ABI-n keresztül. */
     if (g_lkl.running && g_lkl.syscall_fn && n < (int)sizeof(out) - 256) {
-        char probe[1536];
+        char probe[4096];
         probe_kernel_into(probe, sizeof(probe));
         snprintf(out + n, sizeof(out) - n, "\n\n── kernel probe ──\n%s", probe);
     }
