@@ -140,9 +140,6 @@ private fun makeSessionClient() = object : TerminalSessionClient {
     override fun onBell(session: TerminalSession?) {}
     override fun onColorsChanged(session: TerminalSession?) {}
     override fun onTerminalCursorStateChange(state: Boolean) {}
-    override fun setTerminalShellPid(session: TerminalSession?, pid: Int) {
-        Log.i(tag, "shell pid=$pid")
-    }
     override fun getTerminalCursorStyle(): Int = 0     // BLOCK
     override fun logError(tag: String?, message: String?) { Log.e(tag ?: this.tag, message ?: "") }
     override fun logWarn(tag: String?,  message: String?) { Log.w(tag ?: this.tag, message ?: "") }

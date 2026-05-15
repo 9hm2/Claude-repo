@@ -40,40 +40,42 @@ class RootfsManager(private val ctx: Context) {
      * Előkészíti a rootfs-t. UI-thread-en NE hívd — ez lassú (tar+xz).
      * @return null ha sikeres, vagy hibaüzenet.
      */
-    fun prepare(progressCb: ((String) -> Unit)? = null): String? = try {
-        bundleDir.mkdirs()
-        rootfsDir.mkdirs()
+    fun prepare(progressCb: ((String) -> Unit)? = null): String? {
+        try {
+            bundleDir.mkdirs()
+            rootfsDir.mkdirs()
 
-        // 1) proot + launch.sh másolása assets-ből
-        progressCb?.invoke("proot kicsomagolása…")
-        copyAsset("rootfs/proot",     File(bundleDir, "proot"))
-        copyAsset("rootfs/launch.sh", File(bundleDir, "launch.sh"))
-        File(bundleDir, "proot").setExecutable(true, false)
-        File(bundleDir, "launch.sh").setExecutable(true, false)
+            // 1) proot + launch.sh másolása assets-ből
+            progressCb?.invoke("proot kicsomagolása…")
+            copyAsset("rootfs/proot",     File(bundleDir, "proot"))
+            copyAsset("rootfs/launch.sh", File(bundleDir, "launch.sh"))
+            File(bundleDir, "proot").setExecutable(true, false)
+            File(bundleDir, "launch.sh").setExecutable(true, false)
 
-        if (readyMarker.exists()) {
-            Log.i(tag, "rootfs already extracted")
+            if (readyMarker.exists()) {
+                Log.i(tag, "rootfs already extracted")
+                return null
+            }
+
+            // 2) tar.xz kicsomagolása
+            progressCb?.invoke("Kali rootfs kicsomagolása (38 MB)…")
+            val tarball = File(bundleDir, "kalifs-arm64-minimal.tar.xz")
+            copyAsset("rootfs/kalifs-arm64-minimal.tar.xz", tarball)
+
+            // Eltávolítjuk a régi részleges fa-t ha volt
+            if (rootfsDir.exists()) rootfsDir.deleteRecursively()
+            rootfsDir.mkdirs()
+
+            extractTarXz(tarball, rootfsDir, progressCb)
+            tarball.delete()  // ~38 MB már nem kell
+
+            readyMarker.writeText("ready ${System.currentTimeMillis()}\n")
+            progressCb?.invoke("kész")
             return null
+        } catch (t: Throwable) {
+            Log.e(tag, "prepare failed", t)
+            return "RootfsManager hiba: ${t.javaClass.simpleName}: ${t.message}"
         }
-
-        // 2) tar.xz kicsomagolása
-        progressCb?.invoke("Kali rootfs kicsomagolása (38 MB)…")
-        val tarball = File(bundleDir, "kalifs-arm64-minimal.tar.xz")
-        copyAsset("rootfs/kalifs-arm64-minimal.tar.xz", tarball)
-
-        // Eltávolítjuk a régi részleges fa-t ha volt
-        if (rootfsDir.exists()) rootfsDir.deleteRecursively()
-        rootfsDir.mkdirs()
-
-        extractTarXz(tarball, rootfsDir, progressCb)
-        tarball.delete()  // ~38 MB már nem kell
-
-        readyMarker.writeText("ready ${System.currentTimeMillis()}\n")
-        progressCb?.invoke("kész")
-        null
-    } catch (t: Throwable) {
-        Log.e(tag, "prepare failed", t)
-        "RootfsManager hiba: ${t.javaClass.simpleName}: ${t.message}"
     }
 
     private fun copyAsset(assetPath: String, dst: File) {

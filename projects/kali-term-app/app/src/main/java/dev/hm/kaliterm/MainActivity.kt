@@ -28,6 +28,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -45,9 +48,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    var screen by androidx.compose.runtime.remember {
-                        androidx.compose.runtime.mutableStateOf("home")
-                    }
+                    var screen by remember { mutableStateOf("home") }
                     when (screen) {
                         "shell" -> androidx.compose.foundation.layout.Box(
                             modifier = Modifier.fillMaxSize().padding(innerPadding)
