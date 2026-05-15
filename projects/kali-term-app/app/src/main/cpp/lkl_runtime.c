@@ -292,6 +292,29 @@ static void lkl_list_dir_into(char **pp, char *end, const char *path)
     *pp = p;
 }
 
+/* URB-bridge globális állapot: pillanatnyilag csak egy eszközt támogatunk.
+ *
+ * Forward-declarjuk itt (a probe_kernel_into ezt használja a Frissít-en
+ * megjelenő státusz-sorhoz). A struct teljes definícióját a Phase 2c.5d
+ * URB-dispatch blokkban tartjuk lentebb — ez a deklaráció csak a state
+ * tárolásához kell. */
+static struct {
+    pthread_mutex_t lock;
+    int             active;        /* 1 = worker fut */
+    pthread_t       thread;
+    libusb_context       *ctx;
+    libusb_device_handle *handle;
+    int             dup_fd;        /* a libusb_wrap_sys_device-nak adott fd */
+    int             sv_kern;       /* sv[0] — a vhci_hcd kernel-threadé */
+    int             sv_user;       /* sv[1] — a saját oldalunk (LKL-fd) */
+    uint32_t        devid;
+    uint32_t        n_urbs;        /* feldolgozott URB-ek (diag) */
+    uint32_t        n_errors;
+    /* Endpoint type cache: index = (addr & 0x0F) | ((addr & 0x80) >> 3),
+     * 0..31. Érték: LIBUSB_TRANSFER_TYPE_* (0=control, 1=iso, 2=bulk, 3=int). */
+    uint8_t         ep_type[32];
+} g_bridge = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
 /* A futó LKL kernel "életjeleinek" összeszedése: /proc/version,
  * /sys/bus/usb/devices tartalom, vhci_hcd port-státusz. Minden press-elt
  * Frissít-en visszacsekkolódik a kernel-állapot, és a counter változik —
@@ -440,23 +463,8 @@ struct usbip_hdr {
 #pragma pack(pop)
 _Static_assert(sizeof(struct usbip_hdr) == 48, "USB/IP header must be 48 bytes");
 
-/* URB-bridge globális állapot: pillanatnyilag csak egy eszközt támogatunk. */
-static struct {
-    pthread_mutex_t lock;
-    int             active;        /* 1 = worker fut */
-    pthread_t       thread;
-    libusb_context       *ctx;
-    libusb_device_handle *handle;
-    int             dup_fd;        /* a libusb_wrap_sys_device-nak adott fd */
-    int             sv_kern;       /* sv[0] — a vhci_hcd kernel-threadé */
-    int             sv_user;       /* sv[1] — a saját oldalunk (LKL-fd) */
-    uint32_t        devid;
-    uint32_t        n_urbs;        /* feldolgozott URB-ek (diag) */
-    uint32_t        n_errors;
-    /* Endpoint type cache: index = (addr & 0x0F) | ((addr & 0x80) >> 3),
-     * 0..31. Érték: LIBUSB_TRANSFER_TYPE_* (0=control, 1=iso, 2=bulk, 3=int). */
-    uint8_t         ep_type[32];
-} g_bridge = { .lock = PTHREAD_MUTEX_INITIALIZER };
+/* g_bridge (URB worker state) declaráció feljebb a fájlban, a
+ * probe_kernel_into előtt — innentől használjuk a struct mezőit. */
 
 static int ep_index(uint8_t addr)
 {
