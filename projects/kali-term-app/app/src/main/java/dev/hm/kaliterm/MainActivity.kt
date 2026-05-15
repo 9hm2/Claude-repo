@@ -55,8 +55,14 @@ class MainActivity : ComponentActivity() {
                         ) {
                             KaliShellScreen()
                         }
+                        "logs" -> androidx.compose.foundation.layout.Box(
+                            modifier = Modifier.fillMaxSize().padding(innerPadding)
+                        ) {
+                            LogScreen(onBack = { screen = "home" })
+                        }
                         else -> Home(
                             onOpenKaliShell = { screen = "shell" },
+                            onOpenLogs      = { screen = "logs" },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(innerPadding)
@@ -72,6 +78,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Home(
     onOpenKaliShell: () -> Unit = {},
+    onOpenLogs: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val nativeStatus = runCatching {
@@ -101,8 +108,16 @@ fun Home(
 
         // Belépés a Kali shell-be (proot chroot, Termux terminál-emulátor).
         // Első indításnál a rootfs tar.xz kicsomagolása ~30-60 sec.
-        androidx.compose.material3.Button(onClick = onOpenKaliShell) {
-            Text("→ Kali shell")
+        androidx.compose.foundation.layout.Row(
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+        ) {
+            androidx.compose.material3.Button(
+                onClick = onOpenKaliShell,
+                modifier = Modifier.weight(1f),
+            ) { Text("→ Kali shell") }
+            androidx.compose.material3.OutlinedButton(
+                onClick = onOpenLogs,
+            ) { Text("📋 Logok") }
         }
 
         nativeStatus.fold(
