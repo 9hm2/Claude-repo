@@ -58,6 +58,7 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_NR_write         64
 #define LKL_NR_socket       198
 #define LKL_NR_socketpair   199
+#define LKL_NR_getdents64    61
 
 #define LKL_AT_FDCWD         (-100)
 #define LKL_O_RDONLY         0
@@ -234,9 +235,67 @@ static long lkl_read_file(const char *path, char *out, size_t out_sz, size_t *ou
     return n;
 }
 
-/* A futó LKL kernel "életjeleinek" összeszedése: /proc/version + a
- * /sys/bus/usb/devices könyvtár jelenléte. Mind tisztán LKL-on belül
- * fut, lkl_syscall hívásokkal. */
+/* Linux dirent64 — minden arch-on ugyanaz a layout (asm-generic). */
+struct lkl_linux_dirent64 {
+    uint64_t d_ino;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+    char     d_name[];
+};
+
+/* Egy LKL-belső könyvtár tartalmának listázása getdents64-gyel a megadott
+ * bufferbe. NEM rekurzív, csak az első szintű entry-ket írja ki — egy soros
+ * formátumban, "." és ".." nélkül. */
+static void lkl_list_dir_into(char **pp, char *end, const char *path)
+{
+    char *p = *pp;
+    #define A(...) do { if (p < end) p += snprintf(p, end - p, __VA_ARGS__); } while(0)
+    long fd = lkl_open(path, LKL_O_RDONLY);
+    if (fd < 0) {
+        A("  (open %s rc=%ld)\n", path, fd);
+        *pp = p;
+        return;
+    }
+    char dirbuf[2048];
+    int empty = 1;
+    int loops = 0;
+    /* getdents64 visszahívható amíg nem 0 — egy 4K-s könyvtárban ez 1-2 hívás. */
+    while (loops++ < 8) {
+        long bytes = lkl_call(LKL_NR_getdents64, fd,
+                              (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
+        if (bytes < 0) {
+            A("  (getdents64 rc=%ld)\n", bytes);
+            break;
+        }
+        if (bytes == 0) break;
+        long off = 0;
+        while (off < bytes) {
+            struct lkl_linux_dirent64 *d =
+                (struct lkl_linux_dirent64 *)(dirbuf + off);
+            const char *name = d->d_name;
+            /* "." és ".." kihagyása. */
+            if (!(name[0] == '.' && (name[1] == '\0' ||
+                  (name[1] == '.' && name[2] == '\0')))) {
+                A("  %s\n", name);
+                empty = 0;
+            }
+            off += d->d_reclen;
+            if (d->d_reclen == 0) break;  /* safety */
+        }
+    }
+    if (empty) A("  (üres)\n");
+    lkl_close(fd);
+    #undef A
+    *pp = p;
+}
+
+/* A futó LKL kernel "életjeleinek" összeszedése: /proc/version,
+ * /sys/bus/usb/devices tartalom, vhci_hcd port-státusz. Minden press-elt
+ * Frissít-en visszacsekkolódik a kernel-állapot, és a counter változik —
+ * így a UI vizuálisan is mutatja hogy az probe lefutott. */
+static unsigned g_probe_counter = 0;
+
 static void probe_kernel_into(char *buf, size_t bufsz)
 {
     char *p = buf;
@@ -247,6 +306,9 @@ static void probe_kernel_into(char *buf, size_t bufsz)
         APPEND("lkl_syscall not resolved");
         return;
     }
+
+    g_probe_counter++;
+    APPEND("probe #%u\n", g_probe_counter);
 
     /* /proc mount (idempotens). */
     long m = lkl_mount_once("proc", "/proc", "proc");
@@ -269,15 +331,25 @@ static void probe_kernel_into(char *buf, size_t bufsz)
         APPEND("/proc/version:\n  %s\n", tmp);
     }
 
-    /* /sys/bus/usb/devices — listázzuk, hogy lássuk: van-e vhci_hcd
-     * által kreált root hub. Ehhez open + getdents kellene; egyszerűbb
-     * csak az exist-checket csinálni open()-nel. */
-    long fd = lkl_open("/sys/bus/usb/devices", LKL_O_RDONLY);
-    if (fd >= 0) {
-        APPEND("/sys/bus/usb/devices: létezik (vhci_hcd jelen)\n");
-        lkl_close(fd);
-    } else {
-        APPEND("/sys/bus/usb/devices: rc=%ld (vhci_hcd még nincs attach-elve)\n", fd);
+    /* /sys/bus/usb/devices/ — könyvtár tartalom. Sikeres URB-dispatch
+     * után itt megjelenik a vhci_hcd által enumerált eszköz (pl. "1-1"). */
+    APPEND("/sys/bus/usb/devices/:\n");
+    lkl_list_dir_into(&p, end, "/sys/bus/usb/devices");
+
+    /* vhci_hcd port-státusz: a kernel-thread futása + port-állapot. */
+    n = lkl_read_file("/sys/devices/platform/vhci_hcd.0/status",
+                      tmp, sizeof(tmp), &tlen);
+    if (n >= 0) {
+        APPEND("vhci_hcd.0/status:\n");
+        /* Több soros file; ne csonkoljuk, csak indentáljuk. */
+        const char *s2 = tmp;
+        while (*s2) {
+            const char *nl = strchr(s2, '\n');
+            int len = nl ? (int)(nl - s2) : (int)strlen(s2);
+            APPEND("  %.*s\n", len, s2);
+            if (!nl) break;
+            s2 = nl + 1;
+        }
     }
     #undef APPEND
 }
