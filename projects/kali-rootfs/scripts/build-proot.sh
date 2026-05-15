@@ -70,9 +70,29 @@ echo "[build-proot] talloc src: ${TALLOC_DIR}"
 TALLOC_OUT="${WORK}/talloc-out"
 mkdir -p "${TALLOC_OUT}"
 
+# A samba standalone talloc tarball-ban a talloc.c és .h a ROOT alatt
+# vannak (NEM lib/talloc/-ban — az csak a teljes samba git tree layoutja).
+# Dinamikusan megkeressük.
+TALLOC_C=$(find "${TALLOC_DIR}" -maxdepth 4 -name 'talloc.c' -type f \
+           ! -path '*/bin/*' ! -path '*/test*' | head -n1)
+TALLOC_H=$(find "${TALLOC_DIR}" -maxdepth 4 -name 'talloc.h' -type f \
+           ! -path '*/bin/*' ! -path '*/test*' | head -n1)
+if [[ -z "${TALLOC_C}" || -z "${TALLOC_H}" ]]; then
+  echo "[build-proot] HIBA: talloc.c vagy talloc.h nem található:" >&2
+  echo "  talloc.c=${TALLOC_C}" >&2
+  echo "  talloc.h=${TALLOC_H}" >&2
+  echo "  talloc tree top:" >&2
+  ls -la "${TALLOC_DIR}" >&2 | head -30
+  exit 7
+fi
+TALLOC_INC=$(dirname "${TALLOC_H}")
+echo "[build-proot] talloc.c = ${TALLOC_C}"
+echo "[build-proot] talloc.h = ${TALLOC_H} (include: ${TALLOC_INC})"
+
 # A talloc.c néhány HAVE_* makrót vár az autoconf-config.h-ból; mi NDK-val
-# (Bionic glibc-szerű) cross-compile-olunk, és ezeket explicit megadjuk —
-# minden modern POSIX feature elérhető NDK 24+-on.
+# (Bionic, modern POSIX) cross-compile-olunk, és ezeket explicit megadjuk.
+# A `replace.h`-t a HAVE_-makrókkal eldobjuk és csak a stdlib-define-okra
+# hagyatkozunk.
 TALLOC_DEFS=(
     -DHAVE_VA_COPY=1
     -DHAVE_INTPTR_T=1
@@ -93,13 +113,17 @@ TALLOC_DEFS=(
 echo "[build-proot] compile talloc.c"
 "${CC}" -c -O2 -fPIC \
     "${TALLOC_DEFS[@]}" \
+    -I"${TALLOC_INC}" \
     -I"${TALLOC_DIR}" \
-    -I"${TALLOC_DIR}/lib/talloc" \
-    "${TALLOC_DIR}/lib/talloc/talloc.c" \
+    "${TALLOC_C}" \
     -o "${TALLOC_OUT}/talloc.o"
 
 "${AR}" rcs "${TALLOC_OUT}/libtalloc.a" "${TALLOC_OUT}/talloc.o"
 ls -lh "${TALLOC_OUT}/libtalloc.a"
+
+# A proot Makefile <talloc.h>-t #include-ol — adjuk meg a header-keresési
+# útvonalat is.
+TALLOC_INCLUDE_FLAG="-I${TALLOC_INC}"
 
 # ─── 3) Build proot (saját src/Makefile-jével) ────────────────────────────
 PROOT_SRC="${PROOT_DIR}/src"
@@ -125,7 +149,7 @@ make -C "${PROOT_SRC}" -j"$(nproc)" \
     AR="${AR}" \
     OBJCOPY="${OBJCOPY}" \
     HOST_CC="cc" \
-    CFLAGS="-O2 -I${TALLOC_DIR}/lib/talloc -DGIT_VERSION=\"v${PROOT_VERSION}\"" \
+    CFLAGS="-O2 ${TALLOC_INCLUDE_FLAG} -DGIT_VERSION=\"v${PROOT_VERSION}\"" \
     LDFLAGS="-L${TALLOC_OUT} -ltalloc -static-libgcc" \
     proot
 
