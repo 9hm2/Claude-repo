@@ -16,6 +16,7 @@ on:
       - 'projects/kernel-build/**'
       - 'projects/kali-term-app/**'
       - 'projects/usb-bridge/**'
+      - 'projects/kali-rootfs/**'
       - '.github/workflows/kali-term-release.yml'
   workflow_dispatch:
 
@@ -62,10 +63,39 @@ jobs:
           path: projects/kernel-build/out/android-arm64/
           if-no-files-found: error
 
-  # ── 2. APK build (LKL bundled-velvel) ─────────────────────────────────
+  # ── 1b. Kali rootfs + proot bundle (párhuzamosan az LKL build mellett) ─
+  kali-rootfs:
+    name: Kali rootfs + proot bundle
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: projects/kali-rootfs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host helpers (curl, ar, xz, file)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl ca-certificates xz-utils zstd binutils file
+
+      - name: Build bundle (proot ARM64 + Kali rootfs tar.xz + launcher)
+        run: make bundle
+
+      - name: Inspect output
+        run: ls -lh out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kali-rootfs-bundle
+          path: projects/kali-rootfs/out/
+          if-no-files-found: error
+
+  # ── 2. APK build (LKL + Kali rootfs bundled-velvel) ───────────────────
   apk:
     name: APK build (with LKL bundled)
-    needs: lkl-android
+    needs: [lkl-android, kali-rootfs]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -96,13 +126,21 @@ jobs:
           name: lkl-android-arm64
           path: /tmp/lkl-android-arm64
 
-      - name: Place LKL .so → jniLibs, tool ELF-ek → assets
+      - name: Download Kali rootfs bundle (from this workflow run)
+        uses: actions/download-artifact@v4
+        with:
+          name: kali-rootfs-bundle
+          path: /tmp/kali-rootfs-bundle
+
+      - name: Place LKL .so → jniLibs, tool ELF-ek → assets,
+              Kali rootfs + proot → assets/rootfs
         shell: bash
         run: |
           set -euo pipefail
           JNILIB_DIR="app/src/main/jniLibs/arm64-v8a"
           ASSETS_DIR="app/src/main/assets/lkl/arm64-v8a"
-          mkdir -p "$JNILIB_DIR" "$ASSETS_DIR"
+          ROOTFS_ASSETS="app/src/main/assets/rootfs"
+          mkdir -p "$JNILIB_DIR" "$ASSETS_DIR" "$ROOTFS_ASSETS"
 
           shopt -s nullglob
           if [[ -d /tmp/lkl-android-arm64/lib ]]; then
@@ -113,6 +151,16 @@ jobs:
           if [[ -d /tmp/lkl-android-arm64/bin ]]; then
             for f in /tmp/lkl-android-arm64/bin/*; do
               cp -v "$f" "$ASSETS_DIR/"
+            done
+          fi
+
+          # Kali rootfs bundle: proot binary + tarball + launcher script.
+          # MEGJEGYZÉS — a tarball ~250 MB, jelentősen megnöveli az APK-t.
+          # Egy későbbi iterációban érdemes lehet on-demand letöltésre váltani
+          # (a bundle-t első indításkor tölti le az app, nem packolja az APK-ba).
+          if [[ -d /tmp/kali-rootfs-bundle ]]; then
+            for f in /tmp/kali-rootfs-bundle/*; do
+              cp -v "$f" "$ROOTFS_ASSETS/"
             done
           fi
 
