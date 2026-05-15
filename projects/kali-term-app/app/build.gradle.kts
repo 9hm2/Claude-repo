@@ -104,6 +104,16 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
 
+    // Termux terminal-emulator + terminal-view — vendor-elve a CI-build
+    // előtt fetch-termux-terminal.sh-vel. Feltételesen, hogy ne hibázzon
+    // a Gradle config helyiben ha még nincsenek lekérve.
+    if (rootProject.file("terminal-emulator").exists()) {
+        implementation(project(":terminal-emulator"))
+    }
+    if (rootProject.file("terminal-view").exists()) {
+        implementation(project(":terminal-view"))
+    }
+
     testImplementation(libs.junit)
 
     androidTestImplementation(libs.androidx.junit)

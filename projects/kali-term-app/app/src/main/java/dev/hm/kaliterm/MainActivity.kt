@@ -45,12 +45,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Home(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding)
-                            .padding(horizontal = 16.dp, vertical = 12.dp)
-                    )
+                    var screen by androidx.compose.runtime.remember {
+                        androidx.compose.runtime.mutableStateOf("home")
+                    }
+                    when (screen) {
+                        "shell" -> androidx.compose.foundation.layout.Box(
+                            modifier = Modifier.fillMaxSize().padding(innerPadding)
+                        ) {
+                            KaliShellScreen()
+                        }
+                        else -> Home(
+                            onOpenKaliShell = { screen = "shell" },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                        )
+                    }
                 }
             }
         }
@@ -58,7 +69,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun Home(modifier: Modifier = Modifier) {
+fun Home(
+    onOpenKaliShell: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val nativeStatus = runCatching {
         NativeBridge.nativeHello() to NativeBridge.nativeVersion()
     }
@@ -83,6 +97,12 @@ fun Home(modifier: Modifier = Modifier) {
             text = "Userspace Kali terminál — Phase 2b.1",
             style = MaterialTheme.typography.bodyMedium,
         )
+
+        // Belépés a Kali shell-be (proot chroot, Termux terminál-emulátor).
+        // Első indításnál a rootfs tar.xz kicsomagolása ~30-60 sec.
+        androidx.compose.material3.Button(onClick = onOpenKaliShell) {
+            Text("→ Kali shell")
+        }
 
         nativeStatus.fold(
             onSuccess = { (msg, ver) ->
