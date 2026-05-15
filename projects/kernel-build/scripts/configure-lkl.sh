@@ -61,11 +61,35 @@ echo "[configure] alap LKL defconfig (SUBARCH=${SUBARCH})"
 make ARCH=lkl "${MAKE_EXTRA[@]}" defconfig
 
 if [[ -f "${FRAGMENT}" ]]; then
-  echo "[configure] saját fragment merge-elése: ${FRAGMENT}"
-  ./scripts/kconfig/merge_config.sh -m -O . .config "${FRAGMENT}"
+  # MEGJEGYZÉS: korábban `scripts/kconfig/merge_config.sh -m`-t használtunk.
+  # Tapasztalat: a CI Android-NDK build során a CONFIG_UNIX=y NEM ragadt meg
+  # a végső .config-ban (a /proc/net/protocols on-device nem mutatja az
+  # AF_UNIX-ot, és socket(AF_UNIX,…) -EAFNOSUPPORT-tal hibázik), miközben
+  # lokálisan a host-toolchainnel ugyanaz a parancs OK-t adott. Lehet hogy
+  # `make olddefconfig` Android-NDK env-ben máshogy dolgozza fel a merge-elt
+  # .config-ot (pl. `# CONFIG_X is not set` sor megmarad a `CONFIG_X=y`
+  # mellett). Robosztusabb stratégia: a fragment-et DIREKT a .config végéhez
+  # írjuk — `olddefconfig` az utolsó értéket veszi. Plusz előtte explicit
+  # töröljük a "not set" sorokat, amik a fragment-ben kapcsolnánk be.
+  echo "[configure] saját fragment alkalmazása (direct append + olddefconfig)"
+  # Először töröljük a "# CONFIG_FOO is not set" sorokat azokra a kulcsokra,
+  # amiket a fragment bekapcsol — különben kétszer lenne a változónak értéke
+  # és a Kconfig parser viselkedése implementáció-specifikus.
+  awk '/^CONFIG_[A-Z0-9_]+=/{
+        name=$0; sub(/=.*/,"",name); print name
+      }' "${FRAGMENT}" > /tmp/kaliterm-fragment-keys.txt
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    sed -i "\|^# ${key} is not set$|d" .config
+  done < /tmp/kaliterm-fragment-keys.txt
+  printf '\n# ── kaliterm fragment ──\n' >> .config
+  cat "${FRAGMENT}" >> .config
   make ARCH=lkl "${MAKE_EXTRA[@]}" olddefconfig
 else
   echo "[configure] nincs config fragment, csak az alap LKL defconfig"
 fi
 
 echo "[configure] kész — .config előállítva"
+echo "[configure] === kulcs CONFIG értékek (sanity) ==="
+grep -E "^(CONFIG_NET|CONFIG_UNIX|CONFIG_INET|CONFIG_NET_NS|CONFIG_USB($|=|_)|CONFIG_USBIP|CONFIG_HID)" .config | sort || true
+echo "[configure] ============================================"
