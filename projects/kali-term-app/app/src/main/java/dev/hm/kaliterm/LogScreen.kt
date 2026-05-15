@@ -41,8 +41,8 @@ import java.io.File
 
 /**
  * Log viewer Compose screen — két forrásból olvas:
- *   1) Crash-fájlok ($filesDir/crashes/*.log)  — KaliApplication írja
- *   2) Logcat (`logcat -d --uid=$myUid -v time *:V`) — saját és :lkl
+ *   1) Crash-fájlok (filesDir/crashes/) — KaliApplication írja
+ *   2) Logcat (`logcat -d --uid=N -v time -T 2000`) — saját és :lkl
  *      process logjai együtt
  *
  * Funkciók:
