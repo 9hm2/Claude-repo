@@ -60,6 +60,9 @@ android {
 
     buildFeatures {
         compose = true
+        // AGP 8.x alapból false; az LklService Binder IPC-jéhez kell
+        // (src/main/aidl/.../ILklService.aidl → auto-generált Stub/Proxy).
+        aidl = true
     }
 
     externalNativeBuild {
