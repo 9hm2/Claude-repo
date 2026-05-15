@@ -205,6 +205,17 @@ fi
 # A proot Makefile a CC/LD/CFLAGS/LDFLAGS env-változókat figyelembe veszi.
 # Cross-compile esetén minden eszközt explicit átadunk; CFLAGS-ban a talloc.h
 # kereshetősége + az NDK API szint definíciói.
+# A proot egy "python" extension-t is buildel default-ban, ami CPython
+# fejlesztői header-eket vár arch-specifikus pyconfig.h-val. Nekünk se nem
+# kell (nem futtatunk python-ban scriptelt proot-runt), se nem elérhető a
+# cross-target python sysroot-on. Töröljük a forrás-direktóriát ÉS a
+# referenciákat a GNUmakefile-ből.
+echo "[build-proot] strip python extension (cross-build incompat)"
+rm -rf "${PROOT_SRC}/extension/python"
+sed -i.bak '/extension\/python\//d' "${PROOT_MAKEFILE}"
+sed -i.bak '/python_extension/d'    "${PROOT_MAKEFILE}"
+sed -i.bak '/proot_wrap/d'          "${PROOT_MAKEFILE}"
+
 echo "[build-proot] make -C ${PROOT_SRC} (NDK cross-compile)"
 make -C "${PROOT_SRC}" -j"$(nproc)" \
     CC="${CC}" \
