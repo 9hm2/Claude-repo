@@ -371,6 +371,69 @@ static void probe_kernel_into(char *buf, size_t bufsz)
     APPEND("/sys/bus/usb/devices/:\n");
     lkl_list_dir_into(&p, end, "/sys/bus/usb/devices");
 
+    /* Minden 1-* device-interface (nem a root hub) `uevent` fájljából
+     * kiszedjük a DRIVER=... sort — látszani fog hogy melyik mainline
+     * driver kötődött be (ftdi_sio, ch341, usbhid, btusb, stb.). */
+    APPEND("USB interface driver-bindok:\n");
+    {
+        long dfd = lkl_open("/sys/bus/usb/devices", LKL_O_RDONLY);
+        if (dfd >= 0) {
+            char dirbuf[2048];
+            int any = 0;
+            while (1) {
+                long bytes = lkl_call(LKL_NR_getdents64, dfd,
+                                      (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
+                if (bytes <= 0) break;
+                long off = 0;
+                while (off < bytes) {
+                    struct lkl_linux_dirent64 *de =
+                        (struct lkl_linux_dirent64 *)(dirbuf + off);
+                    /* csak az interface-ek (pl. "1-1:1.0"), ne a hub-ok */
+                    if (strchr(de->d_name, ':')) {
+                        char path[160], evt[768];
+                        size_t el = 0;
+                        snprintf(path, sizeof(path),
+                                 "/sys/bus/usb/devices/%s/uevent", de->d_name);
+                        long r = lkl_read_file(path, evt, sizeof(evt), &el);
+                        const char *drv = NULL;
+                        if (r > 0) {
+                            const char *q = strstr(evt, "DRIVER=");
+                            if (q) drv = q + 7;
+                        }
+                        if (drv) {
+                            /* drv sor végén newline lehet */
+                            const char *nl = strchr(drv, '\n');
+                            int dlen = nl ? (int)(nl - drv) : (int)strlen(drv);
+                            APPEND("  %s → %.*s\n", de->d_name, dlen, drv);
+                        } else {
+                            APPEND("  %s → (nincs driver bekötve)\n", de->d_name);
+                        }
+                        any = 1;
+                    }
+                    off += de->d_reclen;
+                    if (de->d_reclen == 0) break;
+                }
+            }
+            if (!any) APPEND("  (egy interface sem)\n");
+            lkl_close(dfd);
+        }
+    }
+
+    /* /sys/class/tty/ — ha ftdi_sio/ch341/cp210x/pl2303 bekötődött,
+     * ttyUSB0, ttyUSB1, stb. jelennek meg itt. */
+    APPEND("/sys/class/tty/:\n");
+    lkl_list_dir_into(&p, end, "/sys/class/tty");
+
+    /* /sys/class/hidraw/ — ha usbhid + hidraw bekötődött (HID device-okhoz). */
+    {
+        long fd = lkl_open("/sys/class/hidraw", LKL_O_RDONLY);
+        if (fd >= 0) {
+            APPEND("/sys/class/hidraw/:\n");
+            lkl_close(fd);
+            lkl_list_dir_into(&p, end, "/sys/class/hidraw");
+        }
+    }
+
     /* vhci_hcd port-státusz: a kernel-thread futása + port-állapot. */
     n = lkl_read_file("/sys/devices/platform/vhci_hcd.0/status",
                       tmp, sizeof(tmp), &tlen);
