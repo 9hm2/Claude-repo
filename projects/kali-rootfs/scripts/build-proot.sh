@@ -223,10 +223,21 @@ fi
 # "extraneous 'endif'" / "Illegal option -g" hibákat kaptunk. A targeted
 # sed csak konkrét token-eket cserél le.
 echo "[build-proot] strip python extension (cross-build incompat)"
-sed -i.bak 's| *extension/python/python\.o||g'              "${PROOT_MAKEFILE}"
-sed -i.bak 's| *extension/python/proot_wrap\.o||g'          "${PROOT_MAKEFILE}"
-sed -i.bak 's| *extension/python/python_extension\.py||g'   "${PROOT_MAKEFILE}"
-sed -i.bak 's| *python_extension\.py||g'                    "${PROOT_MAKEFILE}"
+# Az OBJECTS / prerequisites listákból kivesszük az ÖSSZES python-asszet
+# referenciát. A target:recipe blokkok érintetlenek maradnak (sose lesznek
+# invokálva mert nincsenek a build dep-grafikusban).
+for tok in \
+    'extension/python/python\.o' \
+    'extension/python/proot_wrap\.o' \
+    'extension/python/python_extension\.py' \
+    'extension/python/proot\.py' \
+    'extension/python/proot\.i' \
+    'python_extension\.py' \
+    'proot\.py' \
+    'proot\.i'
+do
+    sed -i.bak "s| *${tok}||g" "${PROOT_MAKEFILE}"
+done
 rm -rf "${PROOT_SRC}/extension/python"
 
 echo "[build-proot] make -C ${PROOT_SRC} (NDK cross-compile)"
