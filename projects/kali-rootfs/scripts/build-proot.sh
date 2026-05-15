@@ -33,17 +33,26 @@ TALLOC_VERSION="${TALLOC_VERSION:-2.4.2}"
 CC="${NDK_BIN}/${TARGET}-clang"
 LD="${CC}"
 AR="${NDK_BIN}/llvm-ar"
-# OBJCOPY: a proot Makefile loader-wrapped.o-hoz BFD-stílusú formátum-
-# neveket ad át (`elf64-little`, `-B aarch64`). Az NDK llvm-objcopy ezt
-# nem ismeri ("invalid output format"). A GNU binutils aarch64-linux-gnu-
-# objcopy igen — ezért előnyben részesítjük ha elérhető (Ubuntu CI-ban
-# binutils-aarch64-linux-gnu csomagból). Fallback NDK llvm-objcopy.
-if command -v aarch64-linux-gnu-objcopy >/dev/null; then
+# OBJCOPY + OBJDUMP: a proot GNUmakefile a loader-wrapped.o-hoz az
+# `objdump -f cli/cli.o` outputból derivátja a formátumot és arch-ot,
+# majd átadja `objcopy --output-target=... --binary-architecture=...`-nak.
+# Default-ban host x86_64 binutils-t használ, ami az aarch64 .o-t
+# "architecture: UNKNOWN!" formában írja le — innen jött a
+# "architecture UNKNOWN! unknown" linker-hiba.
+#
+# GNU binutils-aarch64-linux-gnu (apt) tartalmazza a megfelelő
+# multi-arch parsert mind objdump-ban mind objcopy-ban.
+if command -v aarch64-linux-gnu-objcopy >/dev/null \
+   && command -v aarch64-linux-gnu-objdump >/dev/null; then
     OBJCOPY="$(command -v aarch64-linux-gnu-objcopy)"
-    echo "[build-proot] OBJCOPY = ${OBJCOPY} (GNU binutils — ismeri BFD format-strings)"
+    OBJDUMP="$(command -v aarch64-linux-gnu-objdump)"
+    echo "[build-proot] OBJCOPY = ${OBJCOPY} (GNU aarch64 binutils)"
+    echo "[build-proot] OBJDUMP = ${OBJDUMP} (GNU aarch64 binutils)"
 else
     OBJCOPY="${NDK_BIN}/llvm-objcopy"
+    OBJDUMP="${NDK_BIN}/llvm-objdump"
     echo "[build-proot] OBJCOPY = ${OBJCOPY} (NDK llvm-objcopy — fallback)"
+    echo "[build-proot] OBJDUMP = ${OBJDUMP} (NDK llvm-objdump — fallback)"
 fi
 
 if [[ ! -x "${CC}" ]]; then
@@ -241,6 +250,7 @@ for tok in \
     'extension/python/python\.o' \
     'extension/python/python_extension\.o' \
     'extension/python/proot_wrap\.o' \
+    'extension/python/proot\.o' \
     'extension/python/python_extension\.py' \
     'extension/python/proot\.py' \
     'extension/python/proot\.i' \
@@ -259,6 +269,7 @@ make -C "${PROOT_SRC}" -j"$(nproc)" \
     LD="${LD}" \
     AR="${AR}" \
     OBJCOPY="${OBJCOPY}" \
+    OBJDUMP="${OBJDUMP}" \
     STRIP="${NDK_BIN}/llvm-strip" \
     HOST_CC="cc" \
     CFLAGS="-O2 ${TALLOC_INCLUDE_FLAG} -DGIT_VERSION=\"v${PROOT_VERSION}\"" \
