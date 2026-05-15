@@ -509,14 +509,24 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
 
         /* socketpair LKL-belső fd-kkel. Ezek a kernel current_task fd
          * táblájában jönnek létre — ugyanaz a tábla amit sockfd_lookup
-         * használ az attach-implementációban. */
-        long sv[2] = { -1, -1 };
+         * használ az attach-implementációban.
+         *
+         * MEGJEGYZÉS — a kernel socketpair() szignatúrája:
+         *   SYSCALL_DEFINE4(socketpair, int, fam, int, type, int, proto,
+         *                   int __user *, usockvec)
+         * A kernel 2 db `int`-et ír (8 byte), tehát a buffert is `int[2]`-ként
+         * kell deklarálni. Régebben `long[2]`-ként volt — az 16 byte, a kernel
+         * csak az alsó 8 byte-ot tölti ki, ami azt jelenti hogy
+         * sv[0] = (fd1 << 32) | fd0 (értelmetlen érték, pl. 4294967296),
+         * sv[1] = uninicializált. A vhci_hcd attach ezt a hibás fd-t kapta,
+         * amit sockfd_lookup nem talált meg → silent fail. */
+        int sv[2] = { -1, -1 };
         long sp_rc = lkl_call(LKL_NR_socketpair, LKL_AF_UNIX, LKL_SOCK_STREAM,
                               0, (long)(intptr_t)sv, 0);
         if (sp_rc < 0) {
             APPEND("lkl socketpair(AF_UNIX): rc=%ld — AF_UNIX nem támogatott\n", sp_rc);
         } else {
-            APPEND("lkl socketpair → sv[0]=%ld sv[1]=%ld\n", sv[0], sv[1]);
+            APPEND("lkl socketpair → sv[0]=%d sv[1]=%d\n", sv[0], sv[1]);
 
             /* Megnyitjuk a vhci_hcd attach sysfs-fájlt írásra. */
             long sysfs = lkl_open("/sys/devices/platform/vhci_hcd.0/attach",
@@ -537,7 +547,7 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
                  */
                 uint32_t devid = ((uint32_t)busnum << 16) | (uint32_t)devnum;
                 char cmd[80];
-                int n = snprintf(cmd, sizeof(cmd), "0 %ld %u 3",
+                int n = snprintf(cmd, sizeof(cmd), "0 %d %u 3",
                                  sv[0], (unsigned)devid);
                 long w = lkl_call(LKL_NR_write, sysfs, (long)(intptr_t)cmd,
                                   (long)n, 0, 0);
