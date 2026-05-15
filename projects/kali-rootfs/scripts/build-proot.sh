@@ -177,13 +177,24 @@ ls -lh "${TALLOC_OUT}/libtalloc.a"
 # útvonalat is.
 TALLOC_INCLUDE_FLAG="-I${TALLOC_INC}"
 
-# ─── 3) Build proot (saját src/Makefile-jével) ────────────────────────────
-PROOT_SRC="${PROOT_DIR}/src"
-if [[ ! -f "${PROOT_SRC}/Makefile" ]]; then
-  echo "[build-proot] HIBA: ${PROOT_SRC}/Makefile nem létezik." >&2
-  find "${PROOT_DIR}" -maxdepth 3 -name Makefile >&2 || true
+# ─── 3) Build proot (saját Makefile-jével) ────────────────────────────────
+# A proot release-eknek vegyes a layout-ja: van amelyikben src/Makefile,
+# van amelyikben GNUmakefile, van amelyikben a top-level Makefile vezet
+# az egészbe. Dinamikusan keressük meg.
+PROOT_MAKEFILE=$(find "${PROOT_DIR}" -maxdepth 3 \
+                 \( -name Makefile -o -name GNUmakefile \) -type f \
+                 ! -path '*/test*' ! -path '*/loader/*' | head -n1)
+if [[ -z "${PROOT_MAKEFILE}" ]]; then
+  echo "[build-proot] HIBA: nem találom a proot fő Makefile-t." >&2
+  echo "[build-proot] proot tree:" >&2
+  find "${PROOT_DIR}" -maxdepth 3 -type d >&2
+  echo "[build-proot] összes Makefile:" >&2
+  find "${PROOT_DIR}" -maxdepth 4 -name '[Mm]akefile' -o -name 'GNUmakefile' >&2
   exit 4
 fi
+PROOT_SRC=$(dirname "${PROOT_MAKEFILE}")
+echo "[build-proot] proot Makefile: ${PROOT_MAKEFILE}"
+echo "[build-proot] proot src dir:  ${PROOT_SRC}"
 
 # proot a `xxd` parancsot várja a loader header-ének előállításához.
 if ! command -v xxd >/dev/null; then
