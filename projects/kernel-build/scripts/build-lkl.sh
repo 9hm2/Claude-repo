@@ -64,8 +64,25 @@ esac
 # Az LKL build belépési pontja a tools/lkl alatt van. A `make` az
 # `arch/lkl/`-be megy be a hoszt-architektúrához, és felépíti a
 # `tools/lkl/lib/liblkl-host-lib.so`-t plus a példa-toolokat.
-echo "[build] make -j${JOBS} -C tools/lkl ${EXTRA_ARGS[*]:-}"
-make -j"${JOBS}" -C tools/lkl "${EXTRA_ARGS[@]}"
+#
+# KCONFIG=olddefconfig: A `tools/lkl/Makefile` default-ban `KCONFIG?=defconfig`-ot
+# használ a DOT_CONFIG szabályban (`make -C ../.. ARCH=lkl $(KCONFIG)`), ami
+# **felülírja** a configure-lkl.sh által előállított .config-ot (a merge-elt
+# fragmentünk elveszik — CONFIG_UNIX, CONFIG_USBIP_VHCI_HCD, stb. NEM kerül
+# be a végső kernelbe). `KCONFIG=olddefconfig` parancssori override-dal a
+# meglévő .config-ot megtartja, és csak az új/hiányzó symbol-okat tölti fel
+# default-tal. A rule maradék része (`cat kernel.config >> .config; olddefconfig;
+# syncconfig`) zavartalanul fut, a tools/lkl autoconf-generálta beállítások
+# (LKL_FUZZING, MMU) tetejére kerülnek a már meglévő network/USB kapcsolóknak.
+echo "[build] make -j${JOBS} -C tools/lkl KCONFIG=olddefconfig ${EXTRA_ARGS[*]:-}"
+make -j"${JOBS}" -C tools/lkl KCONFIG=olddefconfig "${EXTRA_ARGS[@]}"
+
+# Post-build sanity dump: ha a tools/lkl mégis felülírná a .config-ot, itt
+# kiderül — látjuk, hogy a hálózat/USB kapcsolók ott vannak-e a végső
+# kernel-build configban.
+echo "[build] === post-build .config sanity ==="
+grep -E "^(CONFIG_NET|CONFIG_UNIX|CONFIG_INET|CONFIG_NET_NS|CONFIG_USB($|=|_)|CONFIG_USBIP|CONFIG_HID)" .config 2>/dev/null | sort || echo "[build] (.config olvashatatlan)"
+echo "[build] ==================================="
 
 mkdir -p "${OUT_DIR}/${SUBARCH}/lib" "${OUT_DIR}/${SUBARCH}/bin"
 
