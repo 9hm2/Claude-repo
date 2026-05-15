@@ -70,10 +70,9 @@ fun Home(modifier: Modifier = Modifier) {
     val lastDesc by controller.lastDescription
     val bridgeStatus by controller.bridgeStatus
     val activeBridgeId by controller.activeBridgeDeviceId
-    val lklStatus = remember { mutableStateOf(runCatching { NativeBridge.nativeLklStatus() }.getOrDefault("?")) }
-    fun refreshLkl() {
-        lklStatus.value = runCatching { NativeBridge.nativeLklStatus() }.getOrDefault("?")
-    }
+    // LKL most külön `:lkl` process-ben fut — LklController binder-en át beszél vele.
+    // Részletek: LklService.kt / LklController.kt.
+    val lkl = rememberLklController()
 
     Column(
         modifier = modifier,
@@ -102,17 +101,11 @@ fun Home(modifier: Modifier = Modifier) {
 
         // LKL állapot-panel.
         LklStatusBar(
-            status = lklStatus.value,
+            status = lkl.status.value,
             libraryLoaded = NativeBridge.lklLibraryLoaded,
-            onStart = {
-                NativeBridge.nativeLklStart()
-                refreshLkl()
-            },
-            onStop = {
-                NativeBridge.nativeLklStop()
-                refreshLkl()
-            },
-            onRefresh = { refreshLkl() },
+            onStart = { lkl.start() },
+            onStop  = { lkl.stop()  },
+            onRefresh = { lkl.refresh() },
         )
 
         // Bridge állapot-panel.
@@ -232,14 +225,18 @@ private fun LklStatusBar(
     onRefresh: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
-    val running    = status.contains("running = YES")
-    val terminated = status.contains("running = TERMINATED")
-    val available  = status.startsWith("AVAILABLE")
+    val running       = status.contains("running = YES")
+    val terminated    = status.contains("running = TERMINATED")
+    val available     = status.startsWith("AVAILABLE")
+    /* A "(" prefix mind transient életciklus-állapot a kontrollertől:
+     * pl. "(nincs bind)", "(bind folyamatban...)", "(:lkl process kill folyamatban)" */
+    val transitioning = status.startsWith("(")
     val color = when {
-        running    -> MaterialTheme.colorScheme.tertiaryContainer
-        terminated -> MaterialTheme.colorScheme.errorContainer
-        available  -> MaterialTheme.colorScheme.secondaryContainer
-        else       -> MaterialTheme.colorScheme.surfaceVariant
+        running       -> MaterialTheme.colorScheme.tertiaryContainer
+        terminated    -> MaterialTheme.colorScheme.errorContainer
+        available     -> MaterialTheme.colorScheme.secondaryContainer
+        transitioning -> MaterialTheme.colorScheme.surfaceContainerHigh
+        else          -> MaterialTheme.colorScheme.surfaceVariant
     }
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -258,10 +255,11 @@ private fun LklStatusBar(
             ) {
                 Text(
                     text = when {
-                        running    -> "LKL — RUNNING"
-                        terminated -> "LKL — TERMINATED (app-restart kell)"
-                        available  -> "LKL — LOADED"
-                        else       -> "LKL — UNAVAILABLE"
+                        running       -> "LKL — RUNNING (:lkl process)"
+                        terminated    -> "LKL — TERMINATED (app-restart kell)"
+                        available     -> "LKL — READY (:lkl process spawn-olva)"
+                        transitioning -> "LKL — átmenet folyamatban…"
+                        else          -> "LKL — UNAVAILABLE"
                     },
                     style = MaterialTheme.typography.titleSmall,
                 )
@@ -272,7 +270,10 @@ private fun LklStatusBar(
                     OutlinedButton(onClick = onRefresh) { Text("Frissít") }
                     if (running) {
                         Button(onClick = onStop) { Text("Halt") }
-                    } else if (available && !terminated) {
+                    } else if (!terminated) {
+                        // Akkor is engedjük a Start-ot, ha még nincs bind
+                        // (LklController re-bind-ol, és pending start lefut),
+                        // VAGY ha a :lkl process kill-elve volt (fresh spawn).
                         Button(onClick = onStart) { Text("Start") }
                     }
                 }

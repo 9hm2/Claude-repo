@@ -26,6 +26,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            Az LKL kernel egy KÜLÖN OS process-ben fut (`:lkl`). Indok:
+            az LKL upstream egy-shot kernel — lkl_sys_halt után új
+            lkl_start_kernel ugyanabban a processben crash-eli az appot.
+            A `:lkl` process kill-elésével a kernel state teljesen
+            felszabadul, és új bind friss kernel-state-tel jön vissza.
+            Részletek: LklService.kt.
+        -->
+        <service
+            android:name=".LklService"
+            android:exported="false"
+            android:process=":lkl" />
     </application>
 
 </manifest>
