@@ -15,7 +15,8 @@
 # Build target-ek:
 #   make build-proot         — proot statikus ARM64 binary FORRÁSBÓL (NDK)
 #                              ANDROID_NDK_HOME env változó kötelező
-#   make fetch-kali-rootfs   — Kali minimal rootfs tarball letöltése
+#   make build-kali-rootfs   — Kali ARM64 rootfs debootstrap+qemu-static-tal
+#                              (sudo-jog kell — CI-ben elérhető)
 #   make bundle              — mindkettő, kimenet az out/-ba
 #   make clean               — letöltött artifactok törlése
 #
@@ -25,14 +26,14 @@
 OUT_DIR ?= $(CURDIR)/out
 DL_DIR  ?= $(CURDIR)/downloads
 
-.PHONY: all bundle build-proot fetch-kali-rootfs clean help
+.PHONY: all bundle build-proot build-kali-rootfs clean help
 
 all: bundle help
 
 help:
 	@echo "Targets:"
 	@echo "  make build-proot         — proot ARM64 Bionic FORRÁSBÓL (NDK)"
-	@echo "  make fetch-kali-rootfs   — Kali ARM64 minimal rootfs (~250 MB)"
+	@echo "  make build-kali-rootfs   — Kali ARM64 rootfs debootstrap-pal"
 	@echo "  make bundle              — mindkettőt ÖSSZESZEDI az out/-ba"
 	@echo "  make clean               — letöltöttek + bundle törlése"
 
@@ -40,11 +41,11 @@ build-proot:
 	@mkdir -p $(DL_DIR)
 	@$(CURDIR)/scripts/build-proot.sh "$(DL_DIR)"
 
-fetch-kali-rootfs:
+build-kali-rootfs:
 	@mkdir -p $(DL_DIR)
-	@$(CURDIR)/scripts/fetch-kali-rootfs.sh "$(DL_DIR)"
+	@$(CURDIR)/scripts/build-kali-rootfs.sh "$(DL_DIR)"
 
-bundle: build-proot fetch-kali-rootfs
+bundle: build-proot build-kali-rootfs
 	@mkdir -p $(OUT_DIR)
 	@$(CURDIR)/scripts/build-bundle.sh "$(DL_DIR)" "$(OUT_DIR)"
 
