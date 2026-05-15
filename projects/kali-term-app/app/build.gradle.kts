@@ -114,6 +114,13 @@ dependencies {
         implementation(project(":terminal-view"))
     }
 
+    // Kali rootfs tar.xz kicsomagolása pure-Java-ban (Android toybox NEM
+    // szállít `xz`-t, ezért ProcessBuilder("xz -dc | tar -xf -") elbukik).
+    // commons-compress = TAR olvasás + Unix permission/symlink támogatás.
+    // xz = LZMA/XZ stream-dekódolás (kis ~110 KB JAR).
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.10")
+
     testImplementation(libs.junit)
 
     androidTestImplementation(libs.androidx.junit)

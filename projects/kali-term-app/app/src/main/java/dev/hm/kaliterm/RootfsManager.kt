@@ -1,8 +1,14 @@
 package dev.hm.kaliterm
 
 import android.content.Context
+import android.system.Os
 import android.util.Log
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.tukaani.xz.XZInputStream
+import java.io.BufferedInputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 /**
@@ -87,29 +93,103 @@ class RootfsManager(private val ctx: Context) {
     }
 
     /**
-     * tar.xz kicsomagolása. Bionic-on nincs `tar` parancs, és libarchive-ot
-     * sem akarunk JNI-zni. Helyette: külső `proot` parancs SOSEM kell az
-     * első kicsomagoláshoz, az Android-on van `xz` (toybox-os busybox) ÉS
-     * `tar` (toybox-os). Toybox tar+xz együttese pont jó.
+     * tar.xz kicsomagolás pure-Java-ban (Android toybox NEM szállít `xz`-t).
      *
-     * Stratégia: `xz -dc` (decode to stdout) + `tar -x` egy ProcessBuilderrel.
-     * Mindkettő toybox-szal van Android-on.
+     *  - XZInputStream: az XZ stream-et LZMA2 + integrity-check (CRC64)
+     *    dekódolva tar bájtokká visszafejti.
+     *  - TarArchiveInputStream: végigmegy a tar headereken, eddig 512-byte
+     *    blokk-egységekben.
+     *  - Minden TarArchiveEntry:
+     *      type=Dir         → mkdir
+     *      type=File        → write bytes
+     *      type=Symlink     → Os.symlink(target, linkpath)
+     *      type=Hardlink    → Os.link(target, linkpath)
+     *  - Permission bit-eket Os.chmod-dal állítjuk vissza.
+     *
+     * Symlink-kezelés FONTOS: a Kali rootfs sok bin/lib relatív symlinket
+     * tartalmaz (pl. /usr/sbin → /usr/bin); enélkül a /bin/bash sem indul.
      */
     private fun extractTarXz(tarball: File, dst: File, progressCb: ((String) -> Unit)?) {
-        progressCb?.invoke("xz dekódolás + tar extrakció…")
-        // toybox xz: `xz -dc <file>` → stdout
-        // toybox tar: `tar -xf -` stdin-ből olvas; `-C <dir>` waar kicsomagol
-        val pb = ProcessBuilder(
-            "sh", "-c",
-            "xz -dc ${tarball.absolutePath} | tar -xf - -C ${dst.absolutePath}"
-        )
-        pb.redirectErrorStream(true)
-        val p = pb.start()
-        val output = p.inputStream.bufferedReader().readText()
-        val rc = p.waitFor()
-        if (rc != 0) {
-            throw RuntimeException("xz|tar exit=$rc — $output")
+        progressCb?.invoke("xz dekódolás + tar extrakció (pure-Java)…")
+        val total = tarball.length()
+        var lastProgressBytes = 0L
+        var entries = 0
+
+        FileInputStream(tarball).use { fis ->
+            BufferedInputStream(fis).use { bis ->
+                XZInputStream(bis).use { xz ->
+                    TarArchiveInputStream(xz).use { tar ->
+                        while (true) {
+                            val entry = tar.nextEntry ?: break
+                            extractEntry(entry, tar, dst)
+                            entries++
+                            // Progress beolvasott byte-okból (XZ-tömörítettből).
+                            // Az XZInputStream nem ad progress-API-t, ezért
+                            // hozzávetőlegesen az `entries` alapján mutatjuk.
+                            if (entries % 500 == 0) {
+                                progressCb?.invoke("kicsomagolás: $entries fájl…")
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Log.i(tag, "extracted: ${dst.absolutePath}, files=${dst.walkTopDown().count()}")
+        Log.i(tag, "extracted: ${dst.absolutePath}, entries=$entries")
+        progressCb?.invoke("kicsomagolva: $entries fájl")
+    }
+
+    private fun extractEntry(entry: TarArchiveEntry, tar: TarArchiveInputStream, dst: File) {
+        // Path-traversal védelem: `..` semmilyen formában ne kerülhessen ki
+        // a célmappából.
+        val out = File(dst, entry.name).canonicalFile
+        if (!out.path.startsWith(dst.canonicalPath + File.separator) && out.path != dst.canonicalPath) {
+            Log.w(tag, "skip path-traversal: ${entry.name}")
+            return
+        }
+
+        when {
+            entry.isDirectory -> {
+                out.mkdirs()
+            }
+            entry.isSymbolicLink -> {
+                out.parentFile?.mkdirs()
+                if (out.exists()) out.delete()
+                try {
+                    Os.symlink(entry.linkName, out.absolutePath)
+                } catch (e: Throwable) {
+                    Log.w(tag, "symlink failed ${entry.name} → ${entry.linkName}: ${e.message}")
+                }
+            }
+            entry.isLink -> {
+                out.parentFile?.mkdirs()
+                if (out.exists()) out.delete()
+                val src = File(dst, entry.linkName)
+                try {
+                    Os.link(src.absolutePath, out.absolutePath)
+                } catch (e: Throwable) {
+                    Log.w(tag, "hardlink failed ${entry.name} → ${entry.linkName}: ${e.message}")
+                }
+            }
+            entry.isFile -> {
+                out.parentFile?.mkdirs()
+                FileOutputStream(out).use { fos -> tar.copyTo(fos) }
+            }
+            else -> {
+                // FIFO/char-dev/block-dev: kihagyjuk. A rootfs-szel nem
+                // értünk semmit ezekkel az android-userspace szempontjából.
+                Log.d(tag, "skip special entry: ${entry.name}")
+                return
+            }
+        }
+
+        // Unix permission bit-ek (TarArchiveEntry.mode-ban) — Os.chmod-dal.
+        if (!entry.isSymbolicLink) {
+            try {
+                val mode = entry.mode and 0xFFF  // alsó 12 bit (suid/sgid/sticky + rwx)
+                if (mode != 0) Os.chmod(out.absolutePath, mode)
+            } catch (e: Throwable) {
+                Log.d(tag, "chmod ${entry.name} m=${entry.mode}: ${e.message}")
+            }
+        }
     }
 }
