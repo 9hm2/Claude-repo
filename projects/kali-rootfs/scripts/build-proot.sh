@@ -33,7 +33,18 @@ TALLOC_VERSION="${TALLOC_VERSION:-2.4.2}"
 CC="${NDK_BIN}/${TARGET}-clang"
 LD="${CC}"
 AR="${NDK_BIN}/llvm-ar"
-OBJCOPY="${NDK_BIN}/llvm-objcopy"
+# OBJCOPY: a proot Makefile loader-wrapped.o-hoz BFD-stílusú formátum-
+# neveket ad át (`elf64-little`, `-B aarch64`). Az NDK llvm-objcopy ezt
+# nem ismeri ("invalid output format"). A GNU binutils aarch64-linux-gnu-
+# objcopy igen — ezért előnyben részesítjük ha elérhető (Ubuntu CI-ban
+# binutils-aarch64-linux-gnu csomagból). Fallback NDK llvm-objcopy.
+if command -v aarch64-linux-gnu-objcopy >/dev/null; then
+    OBJCOPY="$(command -v aarch64-linux-gnu-objcopy)"
+    echo "[build-proot] OBJCOPY = ${OBJCOPY} (GNU binutils — ismeri BFD format-strings)"
+else
+    OBJCOPY="${NDK_BIN}/llvm-objcopy"
+    echo "[build-proot] OBJCOPY = ${OBJCOPY} (NDK llvm-objcopy — fallback)"
+fi
 
 if [[ ! -x "${CC}" ]]; then
   echo "[build-proot] HIBA: nincs ${CC}" >&2
@@ -228,11 +239,13 @@ echo "[build-proot] strip python extension (cross-build incompat)"
 # invokálva mert nincsenek a build dep-grafikusban).
 for tok in \
     'extension/python/python\.o' \
+    'extension/python/python_extension\.o' \
     'extension/python/proot_wrap\.o' \
     'extension/python/python_extension\.py' \
     'extension/python/proot\.py' \
     'extension/python/proot\.i' \
     'python_extension\.py' \
+    'python_extension\.o' \
     'proot\.py' \
     'proot\.i'
 do

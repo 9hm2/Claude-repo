@@ -73,12 +73,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install host helpers (curl, xz, file, xxd, build-essential)
+      - name: Install host helpers (curl, xz, file, xxd, build-essential, aarch64-binutils)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             curl ca-certificates xz-utils zstd binutils file \
-            build-essential xxd
+            build-essential xxd \
+            binutils-aarch64-linux-gnu
 
       - name: Install Android NDK 27.0.12077973
         run: |
