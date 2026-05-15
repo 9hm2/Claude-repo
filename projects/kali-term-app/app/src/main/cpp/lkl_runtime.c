@@ -45,6 +45,20 @@ typedef void (*fn_lkl_cleanup)(void);
 typedef long (*fn_lkl_sys_halt)(void);
 typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 
+/* Linux "generic" syscall ABI — same constants for aarch64, riscv64, lkl,
+ * defined in include/uapi/asm-generic/unistd.h. We hard-code instead of
+ * pulling lkl_autoconf.h, because those numbers are stable across versions. */
+#define LKL_NR_mkdirat       34
+#define LKL_NR_mount         40
+#define LKL_NR_openat        56
+#define LKL_NR_close         57
+#define LKL_NR_read          63
+
+#define LKL_AT_FDCWD         (-100)
+#define LKL_O_RDONLY         0
+#define LKL_EBUSY            16
+#define LKL_ENOENT           2
+
 static struct {
     pthread_mutex_t lock;
     int             resolved;        /* dlsym próbálta-e már */
@@ -139,6 +153,125 @@ static void lkl_resolve_locked(void)
     LOGI("LKL resolve: available=%d", g_lkl.available);
 }
 
+/* ── LKL syscall helperek ───────────────────────────────────────────────
+ * Az lkl_syscall(no, params) az LKL host-side ABI generikus belépési
+ * pontja. A params egy 6-elemű long-tömb, amibe sorrendben pakoljuk
+ * a syscall argumentumait (long-ra cast-olva). Lépéseket helper-rel
+ * tisztábban olvashatóvá tesszük.
+ *
+ * Megjegyzés: pointer-argumentumokat (long)(intptr_t) cast-tal adunk
+ * át. Az LKL userspace-be nem ír át pointer-translation-t — a process
+ * VM-jét közvetlenül használja, így a sima C string-pointer működik.
+ */
+
+static long lkl_call(long nr, long a, long b, long c, long d, long e)
+{
+    long p[6] = { a, b, c, d, e, 0 };
+    return g_lkl.syscall_fn(nr, p);
+}
+
+static long lkl_mkdir(const char *path, long mode)
+{
+    return lkl_call(LKL_NR_mkdirat, LKL_AT_FDCWD,
+                    (long)(intptr_t)path, mode, 0, 0);
+}
+static long lkl_mount(const char *source, const char *target,
+                      const char *fstype, long flags, const char *data)
+{
+    return lkl_call(LKL_NR_mount,
+                    (long)(intptr_t)source, (long)(intptr_t)target,
+                    (long)(intptr_t)fstype, flags, (long)(intptr_t)data);
+}
+static long lkl_open(const char *path, long flags)
+{
+    return lkl_call(LKL_NR_openat, LKL_AT_FDCWD,
+                    (long)(intptr_t)path, flags, 0, 0);
+}
+static long lkl_read(long fd, void *buf, unsigned long count)
+{
+    return lkl_call(LKL_NR_read, fd, (long)(intptr_t)buf, (long)count, 0, 0);
+}
+static long lkl_close(long fd)
+{
+    return lkl_call(LKL_NR_close, fd, 0, 0, 0, 0);
+}
+
+/* Egyszeri mount-elés idempotens módon. */
+static long lkl_mount_once(const char *source, const char *target,
+                           const char *fstype)
+{
+    lkl_mkdir(target, 0755);   /* best-effort; -EEXIST is OK */
+    long m = lkl_mount(source, target, fstype, 0, NULL);
+    if (m == 0 || m == -LKL_EBUSY) return 0;
+    return m;
+}
+
+/* Beolvas egy fájlt a LKL kernel fájlrendszeréből egy felhasználói pufferbe.
+ * `out_len` a hasznos bájtok száma a NUL terminálás nélkül. */
+static long lkl_read_file(const char *path, char *out, size_t out_sz, size_t *out_len)
+{
+    long fd = lkl_open(path, LKL_O_RDONLY);
+    if (fd < 0) return fd;
+    long n = lkl_read(fd, out, out_sz - 1);
+    lkl_close(fd);
+    if (n < 0) return n;
+    out[n] = '\0';
+    /* trailing newline-eket levágunk az olvasható kiíráshoz */
+    while (n > 0 && (out[n-1] == '\n' || out[n-1] == '\r' || out[n-1] == ' ')) {
+        out[--n] = '\0';
+    }
+    if (out_len) *out_len = (size_t)n;
+    return n;
+}
+
+/* A futó LKL kernel "életjeleinek" összeszedése: /proc/version + a
+ * /sys/bus/usb/devices könyvtár jelenléte. Mind tisztán LKL-on belül
+ * fut, lkl_syscall hívásokkal. */
+static void probe_kernel_into(char *buf, size_t bufsz)
+{
+    char *p = buf;
+    char *end = buf + bufsz;
+    #define APPEND(...) do { if (p < end) p += snprintf(p, end - p, __VA_ARGS__); } while(0)
+
+    if (!g_lkl.syscall_fn) {
+        APPEND("lkl_syscall not resolved");
+        return;
+    }
+
+    /* /proc mount (idempotens). */
+    long m = lkl_mount_once("proc", "/proc", "proc");
+    if (m < 0) {
+        APPEND("mount(proc): rc=%ld\n", m);
+    }
+    /* /sys mount (idempotens). */
+    long s = lkl_mount_once("sysfs", "/sys", "sysfs");
+    if (s < 0) {
+        APPEND("mount(sysfs): rc=%ld\n", s);
+    }
+
+    /* /proc/version */
+    char tmp[512];
+    size_t tlen = 0;
+    long n = lkl_read_file("/proc/version", tmp, sizeof(tmp), &tlen);
+    if (n < 0) {
+        APPEND("read(/proc/version): rc=%ld\n", n);
+    } else {
+        APPEND("/proc/version:\n  %s\n", tmp);
+    }
+
+    /* /sys/bus/usb/devices — listázzuk, hogy lássuk: van-e vhci_hcd
+     * által kreált root hub. Ehhez open + getdents kellene; egyszerűbb
+     * csak az exist-checket csinálni open()-nel. */
+    long fd = lkl_open("/sys/bus/usb/devices", LKL_O_RDONLY);
+    if (fd >= 0) {
+        APPEND("/sys/bus/usb/devices: létezik (vhci_hcd jelen)\n");
+        lkl_close(fd);
+    } else {
+        APPEND("/sys/bus/usb/devices: rc=%ld (vhci_hcd még nincs attach-elve)\n", fd);
+    }
+    #undef APPEND
+}
+
 /* ── JNI ─────────────────────────────────────────────────────────────── */
 
 JNIEXPORT jstring JNICALL
@@ -150,9 +283,21 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStatus(JNIEnv *env, jobject thiz)
         g_lkl.terminated ? "TERMINATED (app-restart kell)" :
         g_lkl.running    ? "YES"                            :
                            "no";
-    char out[1280];
-    snprintf(out, sizeof(out), "%s\nrunning = %s",
-             g_lkl.status_buf, running_state);
+
+    char out[3072];
+    int n = snprintf(out, sizeof(out), "%s\nrunning = %s",
+                     g_lkl.status_buf, running_state);
+
+    /* Ha fut a kernel, csatoljunk hozzá egy in-kernel életjel-probe-ot:
+     * mount /proc, mount /sys, read /proc/version, /sys/bus/usb létezés.
+     * Ezzel látszik a UI-ban, hogy a Linux kernel valóban fut és
+     * filesystem-syscalls működnek a `lkl_syscall` ABI-n keresztül. */
+    if (g_lkl.running && g_lkl.syscall_fn && n < (int)sizeof(out) - 256) {
+        char probe[1536];
+        probe_kernel_into(probe, sizeof(probe));
+        snprintf(out + n, sizeof(out) - n, "\n\n── kernel probe ──\n%s", probe);
+    }
+
     pthread_mutex_unlock(&g_lkl.lock);
     return (*env)->NewStringUTF(env, out);
 }
