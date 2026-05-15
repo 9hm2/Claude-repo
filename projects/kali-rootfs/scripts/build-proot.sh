@@ -93,6 +93,11 @@ echo "[build-proot] talloc.h = ${TALLOC_H} (include: ${TALLOC_INC})"
 # (Bionic, modern POSIX) cross-compile-olunk, és ezeket explicit megadjuk.
 # A `replace.h`-t a HAVE_-makrókkal eldobjuk és csak a stdlib-define-okra
 # hagyatkozunk.
+#
+# TALLOC_BUILD_VERSION_* — normalban a samba waf build-system generálja
+# a verzió-számból. Mi a TALLOC_VERSION env változóból szedjük ki ÉS
+# explicit átadjuk -D-vel hogy a TALLOC_MAGIC_NON_RANDOM macro lefusson.
+IFS=. read -r TALLOC_V_MAJ TALLOC_V_MIN TALLOC_V_REL <<< "${TALLOC_VERSION}"
 TALLOC_DEFS=(
     -DHAVE_VA_COPY=1
     -DHAVE_INTPTR_T=1
@@ -108,6 +113,9 @@ TALLOC_DEFS=(
     -DHAVE_MEMSET=1
     -DHAVE_GETPAGESIZE=1
     -D_GNU_SOURCE=1
+    -DTALLOC_BUILD_VERSION_MAJOR=${TALLOC_V_MAJ}
+    -DTALLOC_BUILD_VERSION_MINOR=${TALLOC_V_MIN}
+    -DTALLOC_BUILD_VERSION_RELEASE=${TALLOC_V_REL}
 )
 
 # talloc.c #include "replace.h" — ez samba POSIX-compat shim, NEM része a
@@ -140,9 +148,15 @@ cat > "${STUB_INC}/replace.h" <<'EOF'
 #include <sys/stat.h>
 #include <time.h>
 #include <fcntl.h>
+#include <sys/param.h>   /* MIN/MAX glibc-on */
 
-/* talloc esetenként ezt használja — tipikusan a "uint_least32_t a min/max
- * value-jának" jellegű cucc, mind a stdint.h-ban. */
+/* MIN/MAX (glibc-extension) — Bionic-ban nincs, talloc.c hivatkozza. */
+#ifndef MIN
+#define MIN(a,b) (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a,b) (((a) > (b)) ? (a) : (b))
+#endif
 
 #endif /* _MINIMAL_REPLACE_H */
 EOF
