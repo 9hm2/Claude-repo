@@ -43,6 +43,13 @@ for mod in terminal-emulator terminal-view; do
   # ami modern AGP-t és AndroidX-et használ (Termux upstream még groovy
   # Gradle-t használ a saját verziójával).
   rm -f "${DST}/build.gradle"
+
+  # A Termux saját unit-tesztjei JUnit 3-as `junit.framework.TestCase`-t
+  # importálnak, és külön testRunner-konfigot várnak. Mi nem szállunk be
+  # a Termux-tesztek maintenance-jébe — a vendor modulokat csak mint
+  # library-ket akarjuk linkelni. Eltávolítjuk a test-forrásokat hogy a
+  # `:terminal-emulator:test` task üresen átmenjen.
+  rm -rf "${DST}/src/test" "${DST}/src/androidTest"
 done
 
 # Saját build.gradle.kts a terminal-emulator-hez (pure Java + JNI).
