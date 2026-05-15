@@ -261,7 +261,33 @@ for tok in \
 do
     sed -i.bak "s| *${tok}||g" "${PROOT_MAKEFILE}"
 done
-rm -rf "${PROOT_SRC}/extension/python"
+# A python forrásokat NEM töröljük, csak a python.c-t cseréljük le
+# egy stub-ra: a `python_callback()` szimbólumot a cli/proot.c LD-szinten
+# referálja (a -P CLI option handler kéri), így nem elég csak az OBJECTS-
+# ből kivenni — egy stub function kell ami undefined symbol-t megakadá-
+# lyozza. Visszaadunk -1-et = a -P opció soft-fail-el ha valaki használná.
+mkdir -p "${PROOT_SRC}/extension/python"
+cat > "${PROOT_SRC}/extension/python/python_stub.c" <<'EOF'
+/* Stub: python extension nincs build-elve. A cli/proot.c -P opciója
+ * (initialize_extension(tracee, python_callback, value)) hivatkozik
+ * a python_callback szimbólumra LD-szinten. Ez a stub csak undefined-
+ * symbolt akadályoz meg; a -P futtatása silent -1 (= "extension not
+ * available", proot folytatja értelmesen). */
+#include <stdint.h>
+struct Extension;
+typedef struct Extension Extension;
+typedef int ExtensionEvent;
+int python_callback(Extension *e, ExtensionEvent ev, intptr_t d1, intptr_t d2)
+{
+    (void)e; (void)ev; (void)d1; (void)d2;
+    return -1;
+}
+EOF
+# A stub-ot statikusan adjuk a proot OBJECTS listához. Az OBJECTS-listát
+# a `proot: $(OBJECTS)` szabály kéri — make automatikusan végigmegy a
+# %.o → %.c szabályon és lefordítja. Standalone OBJECTS += sort beszúrunk
+# az első OBJECTS += elé (continuation \ miatt nem fűzhetjük utána).
+sed -i.bak '/^OBJECTS += \\$/i OBJECTS += extension/python/python_stub.o' "${PROOT_MAKEFILE}"
 
 echo "[build-proot] make -C ${PROOT_SRC} (NDK cross-compile)"
 make -C "${PROOT_SRC}" -j"$(nproc)" \
