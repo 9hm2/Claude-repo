@@ -110,9 +110,47 @@ TALLOC_DEFS=(
     -D_GNU_SOURCE=1
 )
 
+# talloc.c #include "replace.h" — ez samba POSIX-compat shim, NEM része a
+# standalone talloc tarball-nak. Bionic NDK 24+-on minden olyan POSIX-funkció
+# elérhető natívan amit a samba replace.c körbe-helyettesít, így egy minimál
+# stub-ot tudunk adni neki ami csak a standard libc header-eket include-olja.
+STUB_INC="${WORK}/talloc-stub-include"
+mkdir -p "${STUB_INC}"
+cat > "${STUB_INC}/replace.h" <<'EOF'
+/* Minimal replace.h stub — csak Bionic NDK 24+ build-hez. A samba lib/replace
+ * a portable POSIX-compat shim, de NDK Bionic-on minden szükséges függvény
+ * (snprintf, strdup, mmap, va_copy, ...) natívan megvan. */
+#ifndef _MINIMAL_REPLACE_H
+#define _MINIMAL_REPLACE_H
+
+#define _GNU_SOURCE 1
+
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <fcntl.h>
+
+/* talloc esetenként ezt használja — tipikusan a "uint_least32_t a min/max
+ * value-jának" jellegű cucc, mind a stdint.h-ban. */
+
+#endif /* _MINIMAL_REPLACE_H */
+EOF
+
 echo "[build-proot] compile talloc.c"
 "${CC}" -c -O2 -fPIC \
     "${TALLOC_DEFS[@]}" \
+    -I"${STUB_INC}" \
     -I"${TALLOC_INC}" \
     -I"${TALLOC_DIR}" \
     "${TALLOC_C}" \
