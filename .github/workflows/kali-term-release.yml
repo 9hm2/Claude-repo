@@ -1,14 +1,14 @@
 name: kali-term release
 
-# Két jobban összefűzött pipeline:
-#   1) lkl-android  → mainline Linux kernel forrásból Bionic-ABI ARM64
-#                     liblkl*.so / tool binárik (NDK aarch64-android24-clang).
-#   2) apk          → ugyanezen run artifact-jából letölti az .so-kat
-#                     a jniLibs/arm64-v8a/-ba, tools a assets/-be; majd
-#                     a Compose/NDK APK build (lint, test, assembleDebug).
+# Three-stage pipeline path-szűréssel:
+#   1) lkl-android  → kernel-build/ változott → újraépíti
+#   2) kali-rootfs  → kali-rootfs/  változott → újraépíti
+#   3) apk          → MINDIG fut; az LKL/rootfs artifact-okat ha a saját
+#                     jobjuk lefutott innen veszi, KÜLÖNBEN a legutóbbi
+#                     sikeres workflow-run artifact-jaiból.
 #
-# Ezzel a sorrenddel az APK MINDIG a friss LKL-lel épül; nincs cross-workflow
-# verseny vagy stale artifact-választás.
+# Csak az APK módosítása → ~2-3 perc, a lassú LKL build (~15 perc) és a
+# rootfs debootstrap (~10 perc) skip-pelődik.
 
 on:
   push:
@@ -21,9 +21,35 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── 1. LKL Android Bionic build ───────────────────────────────────────
+  # ── 0. Path filter — meghatározza melyik subprojektet érintette a push
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      lkl:    ${{ steps.filter.outputs.lkl }}
+      rootfs: ${{ steps.filter.outputs.rootfs }}
+      app:    ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            lkl:
+              - 'projects/kernel-build/**'
+              - '.github/workflows/kali-term-release.yml'
+            rootfs:
+              - 'projects/kali-rootfs/**'
+              - '.github/workflows/kali-term-release.yml'
+            app:
+              - 'projects/kali-term-app/**'
+              - 'projects/usb-bridge/**'
+              - '.github/workflows/kali-term-release.yml'
+
+  # ── 1. LKL Android Bionic build (csak ha kernel-build/ változott) ────
   lkl-android:
     name: LKL build (android arm64, Bionic)
+    needs: paths
+    if: needs.paths.outputs.lkl == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -66,6 +92,8 @@ jobs:
   # ── 1b. Kali rootfs + proot bundle (párhuzamosan az LKL build mellett) ─
   kali-rootfs:
     name: Kali rootfs + proot bundle
+    needs: paths
+    if: needs.paths.outputs.rootfs == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -105,7 +133,12 @@ jobs:
   # ── 2. APK build (LKL + Kali rootfs bundled-velvel) ───────────────────
   apk:
     name: APK build (with LKL bundled)
-    needs: [lkl-android, kali-rootfs]
+    needs: [paths, lkl-android, kali-rootfs]
+    # MINDIG fut, kivéve ha minden upstream-függő job hibára futott:
+    if: |
+      always() &&
+      (needs.lkl-android.result == 'success' || needs.lkl-android.result == 'skipped') &&
+      (needs.kali-rootfs.result == 'success' || needs.kali-rootfs.result == 'skipped')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -133,17 +166,45 @@ jobs:
       - name: Fetch Termux terminal-emulator + terminal-view (vendor)
         run: bash scripts/fetch-termux-terminal.sh "$(pwd)"
 
-      - name: Download LKL artifact (from this workflow run)
+      # LKL artifact: ha az lkl-android job ebben a runban lefutott,
+      # onnan; ha skip-pelt (kernel-build/ nem változott), a legutóbbi
+      # sikeres workflow-run artifact-jából.
+      - name: Download LKL artifact (this run)
+        if: needs.lkl-android.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: lkl-android-arm64
           path: /tmp/lkl-android-arm64
 
-      - name: Download Kali rootfs bundle (from this workflow run)
+      - name: Download LKL artifact (legutóbbi sikeres run)
+        if: needs.lkl-android.result == 'skipped'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: lkl-android-arm64
+          path: /tmp/lkl-android-arm64
+          workflow: kali-term-release.yml
+          workflow_conclusion: success
+          branch: ${{ github.ref_name }}
+          if_no_artifact_found: fail
+
+      # Kali rootfs bundle: ugyanaz a feltételes letöltés.
+      - name: Download Kali rootfs bundle (this run)
+        if: needs.kali-rootfs.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: kali-rootfs-bundle
           path: /tmp/kali-rootfs-bundle
+
+      - name: Download Kali rootfs bundle (legutóbbi sikeres run)
+        if: needs.kali-rootfs.result == 'skipped'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: kali-rootfs-bundle
+          path: /tmp/kali-rootfs-bundle
+          workflow: kali-term-release.yml
+          workflow_conclusion: success
+          branch: ${{ github.ref_name }}
+          if_no_artifact_found: fail
 
       - name: Place LKL .so → jniLibs, tool ELF-ek → assets,
               Kali rootfs + proot → assets/rootfs
