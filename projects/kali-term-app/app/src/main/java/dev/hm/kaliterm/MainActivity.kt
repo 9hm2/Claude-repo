@@ -102,7 +102,6 @@ fun Home(modifier: Modifier = Modifier) {
         // LKL állapot-panel.
         LklStatusBar(
             status = lkl.status.value,
-            libraryLoaded = NativeBridge.lklLibraryLoaded,
             onStart = { lkl.start() },
             onStop  = { lkl.stop()  },
             onRefresh = { lkl.refresh() },
@@ -183,28 +182,28 @@ private fun BridgeStatusBar(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = color),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = if (running) "Bridge — RUNNING" else "Bridge — STOPPED",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            // SelectionContainer: long-press → select → system "copy".
+            SelectionContainer {
                 Text(
-                    text = if (running) "Bridge — RUNNING" else "Bridge — STOPPED",
-                    style = MaterialTheme.typography.titleSmall,
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
                 )
-                // SelectionContainer: long-press → select → system "copy".
-                SelectionContainer {
-                    Text(
-                        text = status,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
             }
-            Column(horizontalAlignment = Alignment.End) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
                 TextButton(onClick = {
                     clipboard.setText(AnnotatedString(status))
                 }) { Text("Másol") }
@@ -219,7 +218,6 @@ private fun BridgeStatusBar(
 @Composable
 private fun LklStatusBar(
     status: String,
-    libraryLoaded: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRefresh: () -> Unit,
@@ -246,43 +244,23 @@ private fun LklStatusBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = when {
-                        running       -> "LKL — RUNNING (:lkl process)"
-                        terminated    -> "LKL — TERMINATED (app-restart kell)"
-                        available     -> "LKL — READY (:lkl process spawn-olva)"
-                        transitioning -> "LKL — átmenet folyamatban…"
-                        else          -> "LKL — UNAVAILABLE"
-                    },
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        clipboard.setText(AnnotatedString(status))
-                    }) { Text("Másol") }
-                    OutlinedButton(onClick = onRefresh) { Text("Frissít") }
-                    if (running) {
-                        Button(onClick = onStop) { Text("Halt") }
-                    } else if (!terminated) {
-                        // Akkor is engedjük a Start-ot, ha még nincs bind
-                        // (LklController re-bind-ol, és pending start lefut),
-                        // VAGY ha a :lkl process kill-elve volt (fresh spawn).
-                        Button(onClick = onStart) { Text("Start") }
-                    }
-                }
-            }
+            // Cím (mindig külön sorban, hogy ne ütközzön a gombokkal)
+            Text(
+                text = when {
+                    running       -> "LKL — RUNNING (:lkl process)"
+                    terminated    -> "LKL — TERMINATED (app-restart kell)"
+                    available     -> "LKL — READY (:lkl process spawn-olva)"
+                    transitioning -> "LKL — átmenet folyamatban…"
+                    else          -> "LKL — UNAVAILABLE"
+                },
+                style = MaterialTheme.typography.titleSmall,
+            )
+            // Részletes status (monospace, scrollozható)
             SelectionContainer {
                 Text(
-                    text = status + if (!libraryLoaded)
-                            "\n(System.loadLibrary(\"lkl-host-lib\") sikertelen — .so nincs az APK-ban)"
-                        else "",
+                    text = status,
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
@@ -291,6 +269,24 @@ private fun LklStatusBar(
                         .heightIn(max = 160.dp)
                         .verticalScroll(rememberScrollState()),
                 )
+            }
+            // Akciógombok — saját sorban, jobbra igazítva, hogy mindig
+            // mind a 3-4 elférjen szűk kijelzőn is.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(status))
+                }) { Text("Másol") }
+                OutlinedButton(onClick = onRefresh) { Text("Frissít") }
+                if (running) {
+                    Button(onClick = onStop) { Text("Halt") }
+                } else if (!terminated) {
+                    // Start akkor is, ha még nincs bind (controller pending-start-ot
+                    // ütemez), vagy ha a :lkl process kill-elve volt (fresh spawn).
+                    Button(onClick = onStart) { Text("Start") }
+                }
             }
         }
     }
