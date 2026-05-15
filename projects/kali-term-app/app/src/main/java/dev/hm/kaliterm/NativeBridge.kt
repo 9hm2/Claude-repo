@@ -84,4 +84,15 @@ object NativeBridge {
 
     /** `lkl_sys_halt()` — tisztán leállítja a futó LKL kernelt. */
     external fun nativeLklStop(): Int
+
+    /**
+     * Phase 2c.5b/c — a `:lkl` process-ben fut, a Binder-en érkezett
+     * USB fd-t libusb_wrap_sys_device-szal megnyitja, descriptor-t olvas,
+     * és ha az LKL kernel él, vhci_hcd attach kísérletet tesz a sysfs-en át.
+     *
+     * Visszaad: diagnosztikai szöveg (minden lépés rc-je + descriptor).
+     */
+    external fun nativeLklAttachUsbDevice(
+        fd: Int, vid: Int, pid: Int, busnum: Int, devnum: Int,
+    ): String
 }

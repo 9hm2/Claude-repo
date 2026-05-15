@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.util.Log
 
@@ -66,6 +67,25 @@ class LklService : Service() {
                 Process.killProcess(Process.myPid())
             }, 150)
             return rc
+        }
+
+        override fun attachUsbDevice(
+            pfd: ParcelFileDescriptor,
+            vid: Int, pid: Int, busnum: Int, devnum: Int,
+        ): String {
+            // ParcelFileDescriptor: a Binder marshalling automatikusan dup-ot
+            // csinált a sender oldali fd-ből, és itt a `:lkl` process saját
+            // fd-jét kapjuk. A natív még egy dup-ot csinál, így a libusb
+            // saját fd-t kap, a PFD-ben tartottat lezárja a PFD `use`-ja.
+            return try {
+                pfd.use { p ->
+                    NativeBridge.nativeLklAttachUsbDevice(
+                        p.fd, vid, pid, busnum, devnum)
+                }
+            } catch (t: Throwable) {
+                Log.e(tag, "attachUsbDevice hiba", t)
+                "ERROR attachUsbDevice: ${t.message}"
+            }
         }
     }
 

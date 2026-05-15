@@ -39,6 +39,18 @@ android {
         }
     }
 
+    signingConfigs {
+        // Stabil debug-key: minden APK build ezzel íródik alá, hogy az
+        // előzőre rátelepülés ne dobjon "INSTALL_FAILED_UPDATE_INCOMPATIBLE"-t
+        // (eltérő signature) — sem CI build, sem fejlesztői build között.
+        getByName("debug") {
+            storeFile = file("kaliterm-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -46,6 +58,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

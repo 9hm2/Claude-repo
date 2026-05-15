@@ -33,6 +33,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <libusb.h>
 
 #define LOG_TAG "kaliterm-lkl"
 #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, fmt, ##__VA_ARGS__)
@@ -53,11 +55,17 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_NR_openat        56
 #define LKL_NR_close         57
 #define LKL_NR_read          63
+#define LKL_NR_write         64
+#define LKL_NR_socketpair   199
 
 #define LKL_AT_FDCWD         (-100)
 #define LKL_O_RDONLY         0
+#define LKL_O_WRONLY         1
 #define LKL_EBUSY            16
 #define LKL_ENOENT           2
+
+#define LKL_AF_UNIX           1
+#define LKL_SOCK_STREAM       1
 
 static struct {
     pthread_mutex_t lock;
@@ -378,4 +386,154 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStop(JNIEnv *env, jobject thiz)
     g_lkl.terminated = 1;
     pthread_mutex_unlock(&g_lkl.lock);
     return (jint)rc;
+}
+
+/* ── Phase 2c.5b/c: USB fd átvétele + vhci_hcd attach kísérlet ─────────
+ *
+ * A main process Binder-en át (ParcelFileDescriptor) átadja a friss-dup-olt
+ * fd-t a `:lkl` process-nek; ott libusb_wrap_sys_device-szal megnyitjuk,
+ * descriptor-t olvasunk, majd — ha a kernel fut — megpróbáljuk a usbip
+ * vhci_hcd-hez attach-olni:
+ *   1. lkl_sys_socketpair(AF_UNIX, SOCK_STREAM) → sv[0] (kernel-side),
+ *      sv[1] (kernel-side; URB-fluxhoz későbbi iterációban)
+ *   2. lkl_sys_open "/sys/devices/platform/vhci_hcd.0/attach"
+ *   3. lkl_sys_write "port_id sockfd devid speed"
+ *
+ * MEGJEGYZÉS — a teljes URB dispatch loop (sv[1] olvasás/írás lkl_sys_-vel +
+ * libusb_submit_transfer + RET_SUBMIT) ennek az iterációnak nem része. Az
+ * attach után a vhci_hcd KÖZBEN várni fog adatra; ha a kernel-thread
+ * timeout-ra fut, a /sys/bus/usb/devices nem fog megjelenni. Ezt a 2c.5d
+ * iteráció hozza össze.
+ *
+ * Cél most: bizonyítani hogy a Binder fd-passzás a `:lkl` processzig megy,
+ * hogy libusb a wrap-elt fd-n olvasni tud a kernelben, és hogy a sysfs
+ * attach útvonal írható (= vhci_hcd modul ÉL és kész fogadni).
+ */
+JNIEXPORT jstring JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject thiz,
+                                                          jint fd, jint vid, jint pid,
+                                                          jint busnum, jint devnum)
+{
+    char out[3072];
+    char *p = out, *e = out + sizeof(out);
+    #define APPEND(...) do { if (p < e) p += snprintf(p, (size_t)(e - p), __VA_ARGS__); } while(0)
+
+    APPEND("USB attach a :lkl process-ben (pid=%d)\n", getpid());
+    APPEND("Bemenet: fd=%d VID=%04x PID=%04x bus=%d dev=%d\n",
+           fd, (unsigned)vid, (unsigned)pid, busnum, devnum);
+
+    /* 1) dup — a Binder már egyszer dup-olta nálunk; még egy dup-pal libusb
+     *    saját ownership-t kap, és nem ütközünk a Java oldali PFD close-jával. */
+    int dup_fd = dup(fd);
+    if (dup_fd < 0) {
+        APPEND("dup(%d) hiba: %s\n", fd, strerror(errno));
+        return (*env)->NewStringUTF(env, out);
+    }
+    APPEND("dup(%d) → %d\n", fd, dup_fd);
+
+    /* 2) libusb wrap-elés (root nélkül, NO_DEVICE_DISCOVERY-vel). */
+    int rc = libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
+    if (rc != LIBUSB_SUCCESS) {
+        APPEND("figyelmeztetés: libusb_set_option(NO_DEVICE_DISCOVERY): %s\n",
+               libusb_strerror(rc));
+    }
+    libusb_context *ctx = NULL;
+    rc = libusb_init(&ctx);
+    if (rc < 0) {
+        APPEND("libusb_init: %s\n", libusb_strerror(rc));
+        close(dup_fd);
+        return (*env)->NewStringUTF(env, out);
+    }
+    libusb_device_handle *handle = NULL;
+    rc = libusb_wrap_sys_device(ctx, (intptr_t)dup_fd, &handle);
+    if (rc < 0) {
+        APPEND("libusb_wrap_sys_device(fd=%d): %s\n", dup_fd, libusb_strerror(rc));
+        close(dup_fd);
+        libusb_exit(ctx);
+        return (*env)->NewStringUTF(env, out);
+    }
+    APPEND("libusb_wrap_sys_device: OK\n");
+
+    /* Descriptor diagnostics — bizonyítja hogy libusb tud olvasni a wrap-elt
+     * fd-ről (Android usbfs sysfs-en át). */
+    libusb_device *dev = libusb_get_device(handle);
+    if (dev) {
+        struct libusb_device_descriptor d;
+        if (libusb_get_device_descriptor(dev, &d) == 0) {
+            APPEND("device descriptor:\n"
+                   "  VID=%04x PID=%04x  class=%02x.%02x.%02x  bcdUSB=%04x\n",
+                   d.idVendor, d.idProduct,
+                   d.bDeviceClass, d.bDeviceSubClass, d.bDeviceProtocol,
+                   d.bcdUSB);
+        }
+    }
+
+    /* 3) vhci_hcd attach kísérlet — csak ha az LKL kernel fut. */
+    pthread_mutex_lock(&g_lkl.lock);
+    int kernel_alive = (g_lkl.running && g_lkl.syscall_fn != NULL);
+    pthread_mutex_unlock(&g_lkl.lock);
+
+    if (!kernel_alive) {
+        APPEND("\n(LKL kernel nem fut — vhci_hcd attach kihagyva.)\n");
+    } else {
+        APPEND("\n── vhci_hcd attach (LKL kernel-szintű) ──\n");
+        /* /sys mount (idempotens). */
+        long m = lkl_mount_once("sysfs", "/sys", "sysfs");
+        if (m < 0) {
+            APPEND("mount(/sys): rc=%ld\n", m);
+        }
+
+        /* socketpair LKL-belső fd-kkel. Ezek a kernel current_task fd
+         * táblájában jönnek létre — ugyanaz a táblat amit sockfd_lookup
+         * használ az attach-implementációban. */
+        long sv[2] = { -1, -1 };
+        long sp_rc = lkl_call(LKL_NR_socketpair, LKL_AF_UNIX, LKL_SOCK_STREAM,
+                              0, (long)(intptr_t)sv, 0);
+        if (sp_rc < 0) {
+            APPEND("lkl socketpair: rc=%ld\n", sp_rc);
+        } else {
+            APPEND("lkl socketpair → sv[0]=%ld sv[1]=%ld\n", sv[0], sv[1]);
+
+            /* Megnyitjuk a vhci_hcd attach sysfs-fájlt írásra. */
+            long sysfs = lkl_open("/sys/devices/platform/vhci_hcd.0/attach",
+                                  LKL_O_WRONLY);
+            if (sysfs < 0) {
+                APPEND("lkl open(/sys/devices/platform/vhci_hcd.0/attach): "
+                       "rc=%ld\n", sysfs);
+                APPEND("(esetleg másik útvonal? lehetséges: "
+                       "/sys/bus/platform/drivers/vhci_hcd/attach)\n");
+            } else {
+                APPEND("attach sysfs nyitva: fd=%ld\n", sysfs);
+
+                /* Format: "<port_id> <sockfd> <devid> <speed>"
+                 *   port_id = 0 (az első virtuális port)
+                 *   sockfd  = sv[0]  (kernel-side socket fd)
+                 *   devid   = (busnum << 16) | devnum  (USB/IP konvenció)
+                 *   speed   = 3  (USB_SPEED_HIGH; USB 2.0)
+                 */
+                uint32_t devid = ((uint32_t)busnum << 16) | (uint32_t)devnum;
+                char cmd[80];
+                int n = snprintf(cmd, sizeof(cmd), "0 %ld %u 3",
+                                 sv[0], (unsigned)devid);
+                long w = lkl_call(LKL_NR_write, sysfs, (long)(intptr_t)cmd,
+                                  (long)n, 0, 0);
+                APPEND("attach write \"%s\" (%d byte) → rc=%ld\n", cmd, n, w);
+                if (w == n) {
+                    APPEND("✓ vhci_hcd kernel-thread elindítva (URB-eket vár).\n");
+                    APPEND("Phase 2c.5d (follow-up): host-side URB-dispatch loop\n"
+                           "a sv[1] LKL-fd-n keresztül → libusb_submit_transfer.\n");
+                }
+                lkl_close(sysfs);
+            }
+        }
+    }
+
+    /* Cleanup — ezt egyelőre szándékosan megtesszük, mert nincs még
+     * dispatch loop. Phase 2c.5d-ben a bridge-state életben kell hogy
+     * maradjon, és csak detach-kor zárjuk. */
+    libusb_close(handle);  /* zárja a dup_fd-t */
+    libusb_exit(ctx);
+
+    #undef APPEND
+    return (*env)->NewStringUTF(env, out);
 }

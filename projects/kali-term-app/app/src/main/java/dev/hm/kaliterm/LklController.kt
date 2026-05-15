@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -125,6 +126,26 @@ class LklController(private val context: Context) {
             runCatching { live.status }.getOrDefault("(getStatus hiba)")
         } else {
             "(nincs bind)"
+        }
+    }
+
+    /**
+     * USB eszköz attach a `:lkl` process-be.
+     *
+     * @param hostFd a UsbManager `openDevice().fileDescriptor` értéke.
+     *   A ParcelFileDescriptor.fromFd() egy DUP-ot csinál belül, így
+     *   a Java-oldali eredeti `UsbDeviceConnection` továbbra is owner.
+     * @return diagnosztikai szöveg a service-től, vagy "(nincs bind)"
+     */
+    fun attachUsb(hostFd: Int, vid: Int, pid: Int, bus: Int, dev: Int): String {
+        val live = iface ?: return "(nincs bind — Start után próbáld)"
+        return try {
+            ParcelFileDescriptor.fromFd(hostFd).use { pfd ->
+                runCatching { live.attachUsbDevice(pfd, vid, pid, bus, dev) }
+                    .getOrElse { "ERROR Binder hívás: ${it.message}" }
+            }
+        } catch (t: Throwable) {
+            "ERROR PFD wrap: ${t.message}"
         }
     }
 }

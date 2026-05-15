@@ -19,4 +19,16 @@ interface ILklService {
      *  Visszaad: a halt rc-je (a kill előtt). A kliens onServiceDisconnected-en
      *  veszi észre hogy a service process eltűnt. */
     int stopKernel();
+
+    /**
+     * USB eszköz fd átadása a `:lkl` process-be:
+     * 1. dup → libusb_wrap_sys_device (root nélkül), descriptor probe
+     * 2. ha az LKL kernel fut: sysfs alatt vhci_hcd attach kísérlet
+     *    (`/sys/devices/platform/vhci_hcd.0/attach`)
+     *
+     * Visszaad: diagnosztikai szöveg minden lépésről (dup, wrap, descriptor,
+     * attach rc-k) — a UI ezt mutatja egy `Másol`-ható dobozban.
+     */
+    String attachUsbDevice(in ParcelFileDescriptor fd,
+                           int vid, int pid, int busnum, int devnum);
 }

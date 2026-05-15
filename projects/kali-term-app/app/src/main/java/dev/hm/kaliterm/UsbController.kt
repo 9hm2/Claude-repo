@@ -112,9 +112,38 @@ class UsbController(private val context: Context) {
     }
 
     /**
+     * Phase 2c.5b/c — USB attach a `:lkl` process-be Binder-en át.
+     * A LklController küldi az fd-t ParcelFileDescriptor-ral; ott libusb
+     * megnyitja és — ha az LKL kernel fut — vhci_hcd attach-ot próbál.
+     * A diagnosztikai szöveg a `lastDescription` mezőbe kerül.
+     */
+    fun attachToLkl(state: UsbDeviceState, lkl: LklController): Int {
+        if (!state.granted) return -1
+        val conn: UsbDeviceConnection = usbManager.openDevice(state.device) ?: return -2
+        val fd = conn.fileDescriptor
+        if (fd < 0) { conn.close(); return -3 }
+        // A conn referenciát le kell kötnünk a state-be amíg a bridge fut,
+        // különben a GC bezárja az fd-t a libusb alól. Phase 2c.5d-ig (URB
+        // dispatch) a bridge nem fut tovább a :lkl process-ben — a natív
+        // jelen iteráció végén libusb_close + libusb_exit-tel elenged.
+        val report = lkl.attachUsb(fd, state.device.vendorId, state.device.productId,
+                                   state.device.deviceId ushr 16,
+                                   state.device.deviceId and 0xFFFF)
+        lastAttachLog.value = "Lkl attach VID=%04x PID=%04x"
+            .format(state.device.vendorId, state.device.productId)
+        lastDescription.value = report
+        conn.close()
+        val idx = devices.indexOfFirst { it.device.deviceId == state.device.deviceId }
+        if (idx >= 0) devices[idx] = state.copy(attached = !report.startsWith("(nincs bind") &&
+                                                            !report.startsWith("ERROR"))
+        return 0
+    }
+
+    /**
      * Diagnosztikai probe — `nativeAcceptUsbDevice` libusb_wrap_sys_device-szal
      * leolvassa a descriptor-okat, majd elenged mindent. A bridge NEM marad
      * fent. Az eredmény logcat-ben és az UI `lastDescription` mezőjében.
+     * Ez a MAIN process-ben fut (nem a :lkl-ben) — diagnosztikai marad.
      */
     fun attachToBridge(state: UsbDeviceState): Int {
         if (!state.granted) return -1

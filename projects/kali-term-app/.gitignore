@@ -9,8 +9,12 @@ captures/
 .cxx
 *.apk
 *.aab
-*.keystore
 release/
+# A debug-keystore-t SZÁNDÉKOSAN nem ignoráljuk — committed, hogy
+# minden APK build ugyanazzal a signature-rel íródjon alá (különben
+# minden új APK install-conflict az előzővel).
+*.keystore
+!app/kaliterm-debug.keystore
 
 # CI által letöltött LKL artifact tartalom — generált, nem tracked.
 app/src/main/jniLibs/arm64-v8a/*.so

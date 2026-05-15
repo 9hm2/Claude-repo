@@ -164,6 +164,7 @@ fun Home(modifier: Modifier = Modifier) {
                             onProbe = { controller.attachToBridge(state) },
                             onStartBridge = { controller.startBridge(state) },
                             onStopBridge = { controller.stopBridge() },
+                            onAttachLkl = { controller.attachToLkl(state, lkl) },
                         )
                     }
                 }
@@ -356,6 +357,7 @@ private fun UsbDeviceCard(
     onProbe: () -> Unit,
     onStartBridge: () -> Unit,
     onStopBridge: () -> Unit,
+    onAttachLkl: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -394,10 +396,7 @@ private fun UsbDeviceCard(
                     Button(onClick = onStopBridge) { Text("Stop bridge") }
                 } else {
                     OutlinedButton(onClick = onProbe) { Text("Probe") }
-                    Button(
-                        onClick = onStartBridge,
-                        enabled = !otherBridgeBlocking,
-                    ) { Text("Start bridge") }
+                    Button(onClick = onAttachLkl) { Text("→ LKL") }
                 }
             }
         }
