@@ -56,6 +56,7 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_NR_close         57
 #define LKL_NR_read          63
 #define LKL_NR_write         64
+#define LKL_NR_socket       198
 #define LKL_NR_socketpair   199
 
 #define LKL_AT_FDCWD         (-100)
@@ -65,6 +66,7 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_ENOENT           2
 
 #define LKL_AF_UNIX           1
+#define LKL_AF_INET           2
 #define LKL_SOCK_STREAM       1
 
 static struct {
@@ -477,20 +479,42 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
         APPEND("\n(LKL kernel nem fut — vhci_hcd attach kihagyva.)\n");
     } else {
         APPEND("\n── vhci_hcd attach (LKL kernel-szintű) ──\n");
-        /* /sys mount (idempotens). */
+        /* /proc + /sys mount-elés (idempotens). */
+        lkl_mount_once("proc", "/proc", "proc");
         long m = lkl_mount_once("sysfs", "/sys", "sysfs");
         if (m < 0) {
             APPEND("mount(/sys): rc=%ld\n", m);
         }
 
+        /* DIAGNOSZTIKA: registered network protocols. */
+        char protos[768];
+        size_t plen = 0;
+        long pr = lkl_read_file("/proc/net/protocols", protos, sizeof(protos), &plen);
+        if (pr > 0) {
+            APPEND("/proc/net/protocols (regisztrált AF-ek):\n%s\n", protos);
+        } else {
+            APPEND("/proc/net/protocols: rc=%ld\n", pr);
+        }
+
+        /* DIAGNOSZTIKA: AF_INET vs AF_UNIX próba külön socket()-tel. */
+        long inet_fd = lkl_call(LKL_NR_socket, LKL_AF_INET, LKL_SOCK_STREAM, 0, 0, 0);
+        APPEND("socket(AF_INET, SOCK_STREAM): rc=%ld%s\n", inet_fd,
+               inet_fd >= 0 ? " ✓" : "");
+        if (inet_fd >= 0) lkl_close(inet_fd);
+
+        long unix_fd = lkl_call(LKL_NR_socket, LKL_AF_UNIX, LKL_SOCK_STREAM, 0, 0, 0);
+        APPEND("socket(AF_UNIX, SOCK_STREAM): rc=%ld%s\n", unix_fd,
+               unix_fd >= 0 ? " ✓" : "");
+        if (unix_fd >= 0) lkl_close(unix_fd);
+
         /* socketpair LKL-belső fd-kkel. Ezek a kernel current_task fd
-         * táblájában jönnek létre — ugyanaz a táblat amit sockfd_lookup
+         * táblájában jönnek létre — ugyanaz a tábla amit sockfd_lookup
          * használ az attach-implementációban. */
         long sv[2] = { -1, -1 };
         long sp_rc = lkl_call(LKL_NR_socketpair, LKL_AF_UNIX, LKL_SOCK_STREAM,
                               0, (long)(intptr_t)sv, 0);
         if (sp_rc < 0) {
-            APPEND("lkl socketpair: rc=%ld\n", sp_rc);
+            APPEND("lkl socketpair(AF_UNIX): rc=%ld — AF_UNIX nem támogatott\n", sp_rc);
         } else {
             APPEND("lkl socketpair → sv[0]=%ld sv[1]=%ld\n", sv[0], sv[1]);
 
