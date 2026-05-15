@@ -12,8 +12,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.Button
@@ -145,7 +143,10 @@ fun KaliShellScreen() {
                     } else {
                         bytes
                     }
-                    s.write(buf)
+                    // TerminalSession.write(byte[], offset, count) — a JNI
+                    // fd-be ír. A 1-arg `write(String)` overload UTF-8-ra
+                    // konvertálna, ami az ESC (0x1b) byteoknál nem ideális.
+                    s.write(buf, 0, buf.size)
                 },
             )
         } else if (ready) {
