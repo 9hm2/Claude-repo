@@ -64,8 +64,11 @@ fun KaliShellScreen() {
     var ctrlMod by remember { mutableStateOf(false) }   // következő billentyű Ctrl-modosítóval
 
     // Soft-keyboard megjelenítő segédfüggvény — TerminalView tap-on hívva.
+    // A Termux flow-t másolja: setFocusable(true) → requestFocus() → showSoftInput.
     fun showKeyboard() {
         val tv = terminalView ?: return
+        tv.isFocusable = true
+        tv.isFocusableInTouchMode = true
         tv.requestFocus()
         val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.showSoftInput(tv, InputMethodManager.SHOW_IMPLICIT)
@@ -111,6 +114,14 @@ fun KaliShellScreen() {
                     .background(Color.Black),
                 factory = { c ->
                     TerminalView(c, null).apply {
+                        // KRITIKUS: a Termux `TerminalView` konstruktora NEM
+                        // állítja be a focusable-t — a TermuxActivity csinálja
+                        // explicit. Nélküle a View.toString() `V.ED.V...` flag-je
+                        // `.` a 2. pozíción → requestFocus() no-op, és az
+                        // InputMethodManager "view is not served" warning-gal
+                        // eldobja a showSoftInput() hívást.
+                        isFocusable = true
+                        isFocusableInTouchMode = true
                         // setTextSize() inicializálja a renderert — KÖTELEZŐ
                         // hogy attachSession előtt fusson, különben NPE az
                         // onSizeChanged-ben.
