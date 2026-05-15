@@ -74,8 +74,52 @@ esac
 # default-tal. A rule maradék része (`cat kernel.config >> .config; olddefconfig;
 # syncconfig`) zavartalanul fut, a tools/lkl autoconf-generálta beállítások
 # (LKL_FUZZING, MMU) tetejére kerülnek a már meglévő network/USB kapcsolóknak.
-echo "[build] make -j${JOBS} -C tools/lkl KCONFIG=olddefconfig ${EXTRA_ARGS[*]:-}"
-make -j"${JOBS}" -C tools/lkl KCONFIG=olddefconfig "${EXTRA_ARGS[@]}"
+echo "[build] make -j${JOBS} -k -C tools/lkl KCONFIG=olddefconfig ${EXTRA_ARGS[*]:-}"
+# `make -k` (keep-going): hiba esetén NEM áll meg az első .c-nél, hanem
+# folytatja amennyi mást tud — így egy CI-futásban az ÖSSZES törött
+# .c-t látjuk, nem csak az elsőt. A teljes outputot egyúttal tee-zzük
+# egy buildlogba, hogy a script végén ki tudjuk emelni a hibákat.
+BUILDLOG="${OUT_DIR}/${SUBARCH}/build.log"
+mkdir -p "$(dirname "${BUILDLOG}")"
+set +e
+make -j"${JOBS}" -k -C tools/lkl KCONFIG=olddefconfig "${EXTRA_ARGS[@]}" \
+    2>&1 | tee "${BUILDLOG}"
+MAKE_RC="${PIPESTATUS[0]}"
+set -e
+
+# Hibák kigyűjtése a build-log-ból. A `error:` prefix mindig kapcsolódik
+# egy .c fájlhoz (clang/gcc syntax), így megbízható szűrő. Egyúttal a
+# Makefile-szintű `*** Error N` sorokat is összeszedjük — abból látszik
+# melyik aldir / target bukott el.
+if [[ "${MAKE_RC}" -ne 0 ]]; then
+    echo ""
+    echo "[build] ##################################################"
+    echo "[build] # MAKE rc=${MAKE_RC} — összegyűjtött hibák alább "
+    echo "[build] ##################################################"
+    echo ""
+    echo "[build] === clang/gcc 'error:' sorok (filenname-mel) ==="
+    grep -E '\.[ch]:[0-9]+:[0-9]+: error:' "${BUILDLOG}" | sort -u | head -200 \
+        || echo "[build] (nincs compile-error a kimenetben)"
+    echo ""
+    echo "[build] === implicit-decl / undef-symbol / lánc ==="
+    grep -E '(implicit declaration|undefined reference|undefined symbol|fatal error)' "${BUILDLOG}" \
+        | sort -u | head -200 \
+        || echo "[build] (nincs ilyen)"
+    echo ""
+    echo "[build] === Makefile-szintű '*** Error' sorok ==="
+    grep -E '^\s*\*\*\* .*Error' "${BUILDLOG}" | head -50 \
+        || echo "[build] (nincs Makefile-error sor)"
+    echo ""
+    echo "[build] === HIBÁS .o / .c targetek ==="
+    grep -E "Error 1$|Error 2$" "${BUILDLOG}" | head -40 \
+        || echo "[build] (nincs target-error)"
+    echo ""
+    echo "[build] ##################################################"
+    echo "[build] # build.log a teljes outputtal: ${BUILDLOG}"
+    echo "[build] # (artifactban is benne lesz)"
+    echo "[build] ##################################################"
+    exit "${MAKE_RC}"
+fi
 
 # Post-build sanity dump: ha a tools/lkl mégis felülírná a .config-ot, itt
 # kiderül — látjuk, hogy a hálózat/USB kapcsolók ott vannak-e a végső
