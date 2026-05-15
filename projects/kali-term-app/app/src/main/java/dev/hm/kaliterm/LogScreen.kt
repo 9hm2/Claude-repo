@@ -35,7 +35,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -132,17 +131,6 @@ fun LogScreen(onBack: () -> Unit = {}) {
                     )
                 }
             }
-        }
-    }
-
-    // Auto-jump to the bottom on each refresh.
-    LaunchedEffect(visible.size) {
-        if (visible.isNotEmpty()) {
-            // kis delay hogy a layout megrenderelhessen
-            delay(50)
-            try {
-                rememberLazyListState() // no-op, just keep type
-            } catch (_: Throwable) {}
         }
     }
 }
