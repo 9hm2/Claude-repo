@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
@@ -114,7 +114,14 @@ fun LogScreen(onBack: () -> Unit = {}) {
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.surfaceVariant),
             ) {
-                items(visible, key = { it }) { line ->
+                // itemsIndexed + index-prefix key: a log-sorok között sok
+                // üres/duplikált string van, sima `key = { it }` IllegalArg-
+                // umentExceptiont dob ("Key was already used"). Az index
+                // garantálja az egyediséget.
+                itemsIndexed(
+                    visible,
+                    key = { idx, _ -> idx },
+                ) { _, line ->
                     val color = when {
                         " E " in line || "FATAL" in line || "fatal" in line -> MaterialTheme.colorScheme.error
                         " W " in line -> MaterialTheme.colorScheme.tertiary

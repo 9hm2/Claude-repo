@@ -94,6 +94,11 @@ fun KaliShellScreen() {
                 modifier = Modifier.fillMaxSize().background(Color.Black),
                 factory = { c ->
                     TerminalView(c, null).apply {
+                        // FONTOS: a setTextSize() inicializálja a `mRenderer`
+                        // mezőt. attachSession() előtt KELL meghívni, különben
+                        // a View első onSizeChanged-jén NPE:
+                        //   updateSize() → mRenderer.mFontWidth → NullPointer
+                        setTextSize(36)              // ~12sp dp-ben; finomítható
                         setTerminalViewClient(makeViewClient())
                         attachSession(s)
                         requestFocus()
