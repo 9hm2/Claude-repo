@@ -40,6 +40,16 @@
             android:name=".LklService"
             android:exported="false"
             android:process=":lkl" />
+
+        <!--
+            Kali shell session (Termux TerminalSession) Service-ből.
+            Ellentétben az LklService-szel, ez NEM külön process — a forkolt
+            shell a Service lifecycle-jához kötve él, és a UI bind-el ide
+            a session event-ekért. Termux `TermuxService` mintát követjük.
+        -->
+        <service
+            android:name=".KaliShellService"
+            android:exported="false" />
     </application>
 
 </manifest>

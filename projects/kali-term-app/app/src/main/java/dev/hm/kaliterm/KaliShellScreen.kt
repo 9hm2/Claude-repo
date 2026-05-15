@@ -1,6 +1,10 @@
 package dev.hm.kaliterm
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.util.Log
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
@@ -21,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,15 +45,24 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Kali shell képernyő. A Termux `TerminalSession`-t indítjuk fel a
- * `launch.sh`-vel — TerminalSession a saját PTY-jét spawnolja (JNI fork+exec)
- * és a `TerminalEmulator`-jával parse-olja az xterm-escape sequence-okat.
- * `TerminalView` rendereli a screen buffert.
+ * Kali shell képernyő — Termux `TermuxActivity` mintára.
  *
- * UI-réteg:
+ * Lifecycle:
+ *   1) Compose belép → bind-elünk a `KaliShellService`-hez (BIND_AUTO_CREATE).
+ *   2) Service connected → `getOrCreateSession(rootfs)` egy idempotens
+ *      `TerminalSession`-t ad (a Service tartja). Regisztrálunk egy
+ *      `TerminalSessionClient`-et ami az event-eket a `TerminalView`-re
+ *      forwardolja — KRITIKUS: `onTextChanged → terminalView.onScreenUpdated()`,
+ *      enélkül a shell ír de a View sosem rajzol újra.
+ *   3) `TerminalView.attachSession(s)` → `onSizeChanged` → `updateSize` →
+ *      `initializeEmulator(cols,rows)` → JNI.createSubprocess → shell forkolva.
+ *   4) Compose kilép → unbind, listener=null. A session a Service-ben tovább
+ *      él (de senki nem kapja az event-eket — egészen a következő bind-ig).
+ *
+ * UI réteg:
  *   - status sor felül
- *   - TerminalView középen (tap → soft keyboard popup)
- *   - extra-keys row alul (Esc, Tab, Ctrl-C, ↑↓←→, Ctrl, /, |, ~, -)
+ *   - TerminalView középen (tap → soft keyboard popup, kötelező focusable)
+ *   - extra-keys row alul (Esc, Tab, Ctrl, ↑↓←→, HOME, END, PgUp, PgDn, …)
  */
 @Composable
 fun KaliShellScreen() {
@@ -56,15 +70,16 @@ fun KaliShellScreen() {
     val rootfs = remember { RootfsManager(ctx) }
 
     var status by remember { mutableStateOf(
-        if (rootfs.isReady()) "rootfs kész — shell indítás" else "rootfs nincs kicsomagolva"
+        if (rootfs.isReady()) "rootfs kész — service-bind…" else "rootfs nincs kicsomagolva"
     ) }
     var ready by remember { mutableStateOf(rootfs.isReady()) }
     var session by remember { mutableStateOf<TerminalSession?>(null) }
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
-    var ctrlMod by remember { mutableStateOf(false) }   // következő billentyű Ctrl-modosítóval
+    var ctrlMod by remember { mutableStateOf(false) }
+    var binder by remember { mutableStateOf<KaliShellService.LocalBinder?>(null) }
 
-    // Soft-keyboard megjelenítő segédfüggvény — TerminalView tap-on hívva.
-    // A Termux flow-t másolja: setFocusable(true) → requestFocus() → showSoftInput.
+    // Soft-keyboard megjelenítő. Termux flow: setFocusable + requestFocus +
+    // showSoftInput. A TerminalView magától NEM kéri az IME-t (nem EditText).
     fun showKeyboard() {
         val tv = terminalView ?: return
         tv.isFocusable = true
@@ -74,7 +89,36 @@ fun KaliShellScreen() {
         imm?.showSoftInput(tv, InputMethodManager.SHOW_IMPLICIT)
     }
 
-    LaunchedEffect(Unit) {
+    // KaliShellService bind a Composable belépésére, unbind a kilépésére.
+    DisposableEffect(Unit) {
+        val conn = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, ib: IBinder) {
+                Log.i("kaliterm-shell", "KaliShellService connected")
+                binder = ib as KaliShellService.LocalBinder
+            }
+            override fun onServiceDisconnected(name: ComponentName?) {
+                Log.w("kaliterm-shell", "KaliShellService disconnected")
+                binder = null
+            }
+        }
+        ctx.bindService(
+            Intent(ctx, KaliShellService::class.java),
+            conn,
+            Context.BIND_AUTO_CREATE,
+        )
+        onDispose {
+            try {
+                binder?.setListener(null)
+                ctx.unbindService(conn)
+            } catch (t: Throwable) {
+                Log.w("kaliterm-shell", "unbindService hiba: ${t.message}")
+            }
+            binder = null
+        }
+    }
+
+    // Rootfs előkészítése (egyszeri) + session lekérés (Service-ből).
+    LaunchedEffect(binder, ready) {
         if (!ready) {
             status = "rootfs előkészítése…"
             val err = withContext(Dispatchers.IO) {
@@ -86,9 +130,43 @@ fun KaliShellScreen() {
             }
             ready = true
         }
-        if (session == null) {
-            session = startSession(rootfs)
-            status = "shell aktív"
+        val b = binder
+        if (b != null && session == null) {
+            // Listener REGISZTRÁCIÓJA — KRITIKUS: a Termux session itt fogja
+            // dispatchelni az onTextChanged eseményeket, és nekünk az a dolgunk
+            // hogy a TerminalView-t újrarajzoltassuk.
+            b.setListener(object : TerminalSessionClient {
+                private val tag = "kaliterm-shell"
+                override fun onTextChanged(s: TerminalSession?) {
+                    // EZ a bug-fix: enélkül a shell ír de a View blank marad.
+                    terminalView?.onScreenUpdated()
+                }
+                override fun onTitleChanged(s: TerminalSession?) {}
+                override fun onSessionFinished(s: TerminalSession?) {
+                    Log.i(tag, "session exited rc=${s?.exitStatus}")
+                    terminalView?.onScreenUpdated()
+                }
+                override fun onCopyTextToClipboard(s: TerminalSession?, text: String?) {}
+                override fun onPasteTextFromClipboard(s: TerminalSession?) {}
+                override fun onBell(s: TerminalSession?) {}
+                override fun onColorsChanged(s: TerminalSession?) {}
+                override fun onTerminalCursorStateChange(state: Boolean) {}
+                override fun getTerminalCursorStyle(): Int = 0
+                override fun logError(t: String?, m: String?) { Log.e(t ?: tag, m ?: "") }
+                override fun logWarn(t: String?,  m: String?) { Log.w(t ?: tag, m ?: "") }
+                override fun logInfo(t: String?,  m: String?) { Log.i(t ?: tag, m ?: "") }
+                override fun logDebug(t: String?, m: String?) {}
+                override fun logVerbose(t: String?, m: String?) {}
+                override fun logStackTraceWithMessage(t: String?, m: String?, e: Exception?) {
+                    Log.e(t ?: tag, m ?: "", e)
+                }
+                override fun logStackTrace(t: String?, e: Exception?) {
+                    Log.e(t ?: tag, "", e)
+                }
+            })
+            session = b.getOrCreateSession(rootfs)
+            status = "shell aktív (session=${session?.hashCode()?.toString(16)})"
+            Log.i("kaliterm-shell", "session attached: $status")
         }
     }
 
@@ -106,7 +184,6 @@ fun KaliShellScreen() {
 
         val s = session
         if (s != null) {
-            // Terminál (megfogja a méret-flexet a Column-ban — weight=1)
             AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -114,12 +191,10 @@ fun KaliShellScreen() {
                     .background(Color.Black),
                 factory = { c ->
                     TerminalView(c, null).apply {
-                        // KRITIKUS: a Termux `TerminalView` konstruktora NEM
-                        // állítja be a focusable-t — a TermuxActivity csinálja
-                        // explicit. Nélküle a View.toString() `V.ED.V...` flag-je
-                        // `.` a 2. pozíción → requestFocus() no-op, és az
-                        // InputMethodManager "view is not served" warning-gal
-                        // eldobja a showSoftInput() hívást.
+                        // Termux TerminalView konstruktora NEM állít focusable-t —
+                        // a TermuxActivity csinálja. Mi is itt csináljuk, mert
+                        // különben requestFocus() no-op és az IME "view is not
+                        // served" warning-gal eldobja a showSoftInput-ot.
                         isFocusable = true
                         isFocusableInTouchMode = true
                         // setTextSize() inicializálja a renderert — KÖTELEZŐ
@@ -127,6 +202,8 @@ fun KaliShellScreen() {
                         // onSizeChanged-ben.
                         setTextSize(36)
                         setTerminalViewClient(makeViewClient(::showKeyboard))
+                        // attachSession() bind-eli a session-t — utána az
+                        // első onSizeChanged forkolja a shellt.
                         attachSession(s)
                         requestFocus()
                         terminalView = this
@@ -134,19 +211,15 @@ fun KaliShellScreen() {
                 },
             )
 
-            // Extra-keys row — vízszintesen scrollozható, hogy minden gomb
-            // elérhető maradjon kis screen-szélességen is.
             ExtraKeysRow(
                 ctrlMod = ctrlMod,
                 onCtrlToggle = { ctrlMod = !ctrlMod },
                 onKey = { bytes ->
                     val buf = if (ctrlMod && bytes.size == 1) {
-                        // Ctrl-modosító: az ASCII 'a'..'z' / '@'..'_' tartomány
-                        // alsó 5 bitje a control-character. Pl. Ctrl-C = 0x03.
                         val c = bytes[0].toInt() and 0xFF
                         val mapped = when (c) {
-                            in 0x60..0x7F -> c - 0x60   // 'a'..'~' → 0x00..0x1F
-                            in 0x40..0x5F -> c - 0x40   // 'A'..'_' → 0x00..0x1F
+                            in 0x60..0x7F -> c - 0x60
+                            in 0x40..0x5F -> c - 0x40
                             else -> c
                         }
                         ctrlMod = false
@@ -154,22 +227,19 @@ fun KaliShellScreen() {
                     } else {
                         bytes
                     }
-                    // TerminalSession.write(byte[], offset, count) — a JNI
-                    // fd-be ír. A 1-arg `write(String)` overload UTF-8-ra
-                    // konvertálna, ami az ESC (0x1b) byteoknál nem ideális.
                     s.write(buf, 0, buf.size)
                 },
             )
         } else if (ready) {
-            Button(onClick = { session = startSession(rootfs) }) { Text("Shell indítása") }
+            Text("Service-bind folyamatban…", style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
 /**
  * Termux-stílusú extra-keys row: ESC, TAB, CTRL (sticky), nyilak, gyakori
- * shell-karakterek (-, /, |, ~). Ctrl gomb sticky → a következő alfa-key
- * Ctrl-modifierként megy ki.
+ * shell-karakterek. Ctrl gomb sticky → a következő alfa-key Ctrl-modifierként
+ * megy ki.
  */
 @Composable
 private fun ExtraKeysRow(
@@ -193,14 +263,15 @@ private fun ExtraKeysRow(
             highlighted = ctrlMod,
             onClick = onCtrlToggle,
         )
-        ExtraKey("↑")  { onKey("[A".toByteArray()) }
-        ExtraKey("↓")  { onKey("[B".toByteArray()) }
-        ExtraKey("←")  { onKey("[D".toByteArray()) }
-        ExtraKey("→")  { onKey("[C".toByteArray()) }
-        ExtraKey("HOME")  { onKey("[H".toByteArray()) }
-        ExtraKey("END")   { onKey("[F".toByteArray()) }
-        ExtraKey("PgUp")  { onKey("[5~".toByteArray()) }
-        ExtraKey("PgDn")  { onKey("[6~".toByteArray()) }
+        // VT100/xterm nav-keys — KÖTELEZŐ az ESC (0x1b) prefix.
+        ExtraKey("↑")    { onKey("[A".toByteArray()) }
+        ExtraKey("↓")    { onKey("[B".toByteArray()) }
+        ExtraKey("←")    { onKey("[D".toByteArray()) }
+        ExtraKey("→")    { onKey("[C".toByteArray()) }
+        ExtraKey("HOME") { onKey("[H".toByteArray()) }
+        ExtraKey("END")  { onKey("[F".toByteArray()) }
+        ExtraKey("PgUp") { onKey("[5~".toByteArray()) }
+        ExtraKey("PgDn") { onKey("[6~".toByteArray()) }
         ExtraKey("-")  { onKey("-".toByteArray()) }
         ExtraKey("/")  { onKey("/".toByteArray()) }
         ExtraKey("|")  { onKey("|".toByteArray()) }
@@ -235,58 +306,16 @@ private fun ExtraKey(
     }
 }
 
-private fun startSession(rootfs: RootfsManager): TerminalSession {
-    val env = arrayOf(
-        "HOME=${rootfs.bundleDir.absolutePath}",
-        "PREFIX=${rootfs.bundleDir.absolutePath}",
-        "ROOTFS_DIR=${rootfs.rootfsDir.absolutePath}",
-        "USER_HOME=/root",
-        "TERM=xterm-256color",
-        "LANG=C.UTF-8",
-        "PATH=/system/bin:/system/xbin",
-    )
-    val session = TerminalSession(
-        /* shellPath = */ "/system/bin/sh",
-        /* cwd       = */ rootfs.bundleDir.absolutePath,
-        /* args      = */ arrayOf(rootfs.launchSh.absolutePath),
-        /* env       = */ env,
-        /* transcriptRows = */ 5000,
-        /* client    = */ makeSessionClient(),
-    )
-    return session
-}
-
-private fun makeSessionClient() = object : TerminalSessionClient {
-    private val tag = "kaliterm-shell"
-    override fun onTextChanged(session: TerminalSession?) {}
-    override fun onTitleChanged(session: TerminalSession?) {}
-    override fun onSessionFinished(session: TerminalSession?) {
-        Log.i(tag, "session exited rc=${session?.exitStatus}")
-    }
-    override fun onCopyTextToClipboard(session: TerminalSession?, text: String?) {}
-    override fun onPasteTextFromClipboard(session: TerminalSession?) {}
-    override fun onBell(session: TerminalSession?) {}
-    override fun onColorsChanged(session: TerminalSession?) {}
-    override fun onTerminalCursorStateChange(state: Boolean) {}
-    override fun getTerminalCursorStyle(): Int = 0
-    override fun logError(tag: String?, message: String?) { Log.e(tag ?: this.tag, message ?: "") }
-    override fun logWarn(tag: String?,  message: String?) { Log.w(tag ?: this.tag, message ?: "") }
-    override fun logInfo(tag: String?,  message: String?) { Log.i(tag ?: this.tag, message ?: "") }
-    override fun logDebug(tag: String?, message: String?) {}
-    override fun logVerbose(tag: String?, message: String?) {}
-    override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {
-        Log.e(tag ?: this.tag, message ?: "", e)
-    }
-    override fun logStackTrace(tag: String?, e: Exception?) {
-        Log.e(tag ?: this.tag, "", e)
-    }
-}
-
+/**
+ * Termux-pattern TerminalViewClient. A legtöbb metódus default-tal/false-szal
+ * tér vissza, hogy a `TerminalView` saját kezelő-logikája dolgozzon
+ * (text-input → emulator → PTY stdin).
+ *
+ * Az egyetlen kritikus override: `onSingleTapUp` → soft-keyboard popup.
+ */
 private fun makeViewClient(showKeyboard: () -> Unit) = object : TerminalViewClient {
     private val tag = "kaliterm-view"
     override fun onScale(scale: Float): Float = scale
-    // FONTOS: tap → soft keyboard popup. A TerminalView nem tudja
-    // önmagában megnyitni az IME-t, csak EditText-szerű view-k.
     override fun onSingleTapUp(e: android.view.MotionEvent?) {
         showKeyboard()
     }
@@ -304,15 +333,15 @@ private fun makeViewClient(showKeyboard: () -> Unit) = object : TerminalViewClie
     override fun readFnKey(): Boolean = false
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession?): Boolean = false
     override fun onEmulatorSet() {}
-    override fun logError(tag: String?, message: String?) { Log.e(tag ?: this.tag, message ?: "") }
-    override fun logWarn(tag: String?,  message: String?) { Log.w(tag ?: this.tag, message ?: "") }
-    override fun logInfo(tag: String?,  message: String?) { Log.i(tag ?: this.tag, message ?: "") }
-    override fun logDebug(tag: String?, message: String?) {}
-    override fun logVerbose(tag: String?, message: String?) {}
-    override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {
-        Log.e(tag ?: this.tag, message ?: "", e)
+    override fun logError(t: String?, m: String?) { Log.e(t ?: tag, m ?: "") }
+    override fun logWarn(t: String?,  m: String?) { Log.w(t ?: tag, m ?: "") }
+    override fun logInfo(t: String?,  m: String?) { Log.i(t ?: tag, m ?: "") }
+    override fun logDebug(t: String?, m: String?) {}
+    override fun logVerbose(t: String?, m: String?) {}
+    override fun logStackTraceWithMessage(t: String?, m: String?, e: Exception?) {
+        Log.e(t ?: tag, m ?: "", e)
     }
-    override fun logStackTrace(tag: String?, e: Exception?) {
-        Log.e(tag ?: this.tag, "", e)
+    override fun logStackTrace(t: String?, e: Exception?) {
+        Log.e(t ?: tag, "", e)
     }
 }
