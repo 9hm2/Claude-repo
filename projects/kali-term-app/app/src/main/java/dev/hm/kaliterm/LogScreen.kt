@@ -13,13 +13,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -106,28 +103,27 @@ fun LogScreen(onBack: () -> Unit = {}) {
         )
 
         Spacer(Modifier.height(4.dp))
-        val listState = rememberLazyListState()
-        SelectionContainer(modifier = Modifier.fillMaxSize()) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                // itemsIndexed + index-prefix key: a log-sorok között sok
-                // üres/duplikált string van, sima `key = { it }` IllegalArg-
-                // umentExceptiont dob ("Key was already used"). Az index
-                // garantálja az egyediséget.
-                itemsIndexed(
-                    visible,
-                    key = { idx, _ -> idx },
-                ) { _, line ->
-                    val color = when {
-                        " E " in line || "FATAL" in line || "fatal" in line -> MaterialTheme.colorScheme.error
-                        " W " in line -> MaterialTheme.colorScheme.tertiary
-                        line.startsWith("=== kaliterm crash") -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+        // FONTOS: NEM SelectionContainer + LazyColumn — az kombináció
+        // `NoSuchElementException: Cannot find value for key N`-nel crashel
+        // (Compose SelectionManager bug, recycle-elt LazyColumn item-eken).
+        // Helyette: sima Column verticalScroll-lal + per-sor SelectionContainer.
+        // Trade-off: minden sor egyszerre allokálódik (lassabb 10k+ sor felett),
+        // de stabil — és a logok jelenleg ≤2000 sor.
+        val scrollState = rememberScrollState()
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .verticalScroll(scrollState),
+        ) {
+            visible.forEach { line ->
+                val color = when {
+                    " E " in line || "FATAL" in line || "fatal" in line -> MaterialTheme.colorScheme.error
+                    " W " in line -> MaterialTheme.colorScheme.tertiary
+                    line.startsWith("=== kaliterm crash") -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                SelectionContainer {
                     Text(
                         text = line,
                         style = MaterialTheme.typography.bodySmall.copy(

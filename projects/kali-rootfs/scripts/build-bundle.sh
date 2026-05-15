@@ -31,36 +31,71 @@ cp -v "${DL_DIR}/kalifs-arm64-minimal.tar.xz"        "${OUT_DIR}/kalifs-arm64-mi
 # absolute path-ja (lásd kaliterm/RootFsManager.kt).
 cat > "${OUT_DIR}/launch.sh" <<'EOF'
 #!/system/bin/sh
-# kaliterm rootfs launcher — proot wrapper.
+# kaliterm rootfs launcher — proot wrapper diagnosztikával.
 #
 # Bemenet (env-ből):
-#   PREFIX        a kaliterm appdata absolute path-ja (rootfs alatt)
-#   ROOTFS_DIR    PREFIX/rootfs — a kicsomagolt Kali fa
-#   USER_HOME     a "kali" user home-ja a rootfs-en (default /root)
+#   PREFIX        a kaliterm appdata absolute path-ja (rootfs-bundle alatt)
+#   ROOTFS_DIR    a kicsomagolt Kali fa absolute path-ja
+#   USER_HOME     a Kali user home-ja a rootfs-en (default /root)
 #
-# Kimenet: a Kali shell-be belépés interactive `bash -l`-lel.
-
-set -e
+# Kimenet: vagy a Kali shell-be belépés (sikeres esetben), vagy egy
+# Android-shell amiben látszanak a hibák. SOSEM tér vissza üres state-tel
+# a hívóhoz — ha minden bedől, /system/bin/sh dropoljuk hogy a user
+# manuálisan tudjon vizsgálódni.
 
 : "${PREFIX:?PREFIX env változó kell}"
-: "${ROOTFS_DIR:=$PREFIX/rootfs}"
+: "${ROOTFS_DIR:=$PREFIX/../rootfs}"
 : "${USER_HOME:=/root}"
 
 PROOT="$PREFIX/proot"
-chmod +x "$PROOT" 2>/dev/null || true
 
-if [ ! -d "$ROOTFS_DIR" ]; then
-  echo "[launch] HIBA: nincs kicsomagolt rootfs $ROOTFS_DIR-ben" >&2
-  exit 1
+echo "════════════════════════════════════════════════"
+echo " kaliterm — proot launcher"
+echo "════════════════════════════════════════════════"
+echo "PREFIX     = $PREFIX"
+echo "ROOTFS_DIR = $ROOTFS_DIR"
+echo "PROOT      = $PROOT"
+echo "USER_HOME  = $USER_HOME"
+echo
+
+# 1) proot bin sanity
+if [ ! -f "$PROOT" ]; then
+    echo "✗ HIBA: $PROOT nem létezik"
+    ls -la "$PREFIX" 2>&1 | head -10
+    echo
+    echo "Drop Android sh-ba a vizsgálathoz."
+    exec /system/bin/sh
+fi
+chmod +x "$PROOT" 2>/dev/null || true
+if [ ! -x "$PROOT" ]; then
+    echo "✗ HIBA: $PROOT nem futtatható"
+    ls -la "$PROOT"
+    exec /system/bin/sh
 fi
 
-# proot opciók:
-#   -0          : minden uid 0-nak látszik a chrootban (kali tooling root-ot vár)
-#   -r          : rootfs path
-#   -b src:dst  : bind-mount a host fájlrendszerből
-#   -w          : working directory induláskor
-#   --link2symlink : '/dev/...' és hard-linkek workaround (Termux best practice)
-#   --kill-on-exit : ha a kaliterm bezárul, a proot-ben futó folyamatok is mennek
+# 2) proot --version (gyors sanity, hogy linkel-e a libc)
+echo "─── proot --version ───"
+"$PROOT" --version 2>&1 || {
+    echo "✗ HIBA: proot --version sikertelen (linkelési vagy ABI hiba?)"
+    exec /system/bin/sh
+}
+echo
+
+# 3) Rootfs sanity
+if [ ! -d "$ROOTFS_DIR" ]; then
+    echo "✗ HIBA: $ROOTFS_DIR nincs (rootfs nem lett kicsomagolva?)"
+    exec /system/bin/sh
+fi
+if [ ! -x "$ROOTFS_DIR/bin/bash" ]; then
+    echo "✗ HIBA: $ROOTFS_DIR/bin/bash nincs vagy nem futtatható"
+    ls -la "$ROOTFS_DIR/bin/" 2>&1 | head -20
+    exec /system/bin/sh
+fi
+echo "✓ rootfs OK ($(ls "$ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
+echo
+
+# 4) Indítás — bash -l a Kali rootfs-ben
+echo "─── proot indítása → /bin/bash ───"
 exec "$PROOT" \
     --link2symlink \
     --kill-on-exit \
@@ -69,7 +104,6 @@ exec "$PROOT" \
     -b /dev \
     -b /proc \
     -b /sys \
-    -b /sdcard \
     -w "$USER_HOME" \
     /usr/bin/env -i \
         HOME="$USER_HOME" \
@@ -77,6 +111,11 @@ exec "$PROOT" \
         TERM="${TERM:-xterm-256color}" \
         LANG=C.UTF-8 \
         /bin/bash -l
+
+# Ide csak akkor jutunk, ha az exec proot SIKERTELEN volt (tipikusan
+# fork failure vagy ptrace permission denied). Drop sh-ba.
+echo "✗ HIBA: exec proot sikertelen ($?)"
+exec /system/bin/sh
 EOF
 chmod +x "${OUT_DIR}/launch.sh"
 

@@ -36,10 +36,8 @@ jobs:
           filters: |
             lkl:
               - 'projects/kernel-build/**'
-              - '.github/workflows/kali-term-release.yml'
             rootfs:
               - 'projects/kali-rootfs/**'
-              - '.github/workflows/kali-term-release.yml'
             app:
               - 'projects/kali-term-app/**'
               - 'projects/usb-bridge/**'
