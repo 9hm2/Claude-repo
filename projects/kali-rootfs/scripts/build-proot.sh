@@ -208,27 +208,24 @@ fi
 # A proot egy "python" extension-t is buildel default-ban, ami CPython
 # fejlesztői header-eket vár arch-specifikus pyconfig.h-val. Nekünk se nem
 # kell (nem futtatunk python-ban scriptelt proot-runt), se nem elérhető a
-# cross-target python sysroot-on. Eltávolítjuk forrás-szinten ÉS a
-# GNUmakefile-ből — fontos hogy a teljes szabály (target + TAB-os recipe-
-# sorok) együtt menjen, különben "recipe commences before first target"
-# hibával áll meg make.
+# cross-target python sysroot-on.
+#
+# Stratégia (minimálisan invazív):
+#   1) A python.o és proot_wrap.o tokeneket egyszerűen kivesszük az OBJECTS
+#      = ... (vagy +=) sorból. A rules (target:recipe blokkok) érintetlenül
+#      maradnak, de make sosem hívja meg őket, mert nincsenek az
+#      $(OBJECTS)-ben.
+#   2) A python forrás-direktóriát töröljük (sanity — ha egy makro mégis
+#      probálkozna build-elni, nem lesz mit).
+#
+# Korábban sed/awk-vel törölni próbáltuk az egész szabályt, de az
+# `ifdef`/`endif` páros és `$(shell ...)` blokkok közelébe nyúlva
+# "extraneous 'endif'" / "Illegal option -g" hibákat kaptunk. A targeted
+# sed csak konkrét token-eket cserél le.
 echo "[build-proot] strip python extension (cross-build incompat)"
+sed -i.bak 's| *extension/python/python\.o||g'      "${PROOT_MAKEFILE}"
+sed -i.bak 's| *extension/python/proot_wrap\.o||g'  "${PROOT_MAKEFILE}"
 rm -rf "${PROOT_SRC}/extension/python"
-awk '
-    # Skip mód: ha az előző "python"-t tartalmazó target-sor után vagyunk
-    # és TAB-os recipe-sor jön, azt is skipoljük.
-    /python|proot_wrap|SWIG/ { skipping = 1; next }
-    /^\t/ {
-        if (skipping) next
-        print; next
-    }
-    {
-        # Nem TAB-os sor → recipe vége; állítsuk vissza a normál módot.
-        skipping = 0
-        print
-    }
-' "${PROOT_MAKEFILE}" > "${PROOT_MAKEFILE}.new"
-mv "${PROOT_MAKEFILE}.new" "${PROOT_MAKEFILE}"
 
 echo "[build-proot] make -C ${PROOT_SRC} (NDK cross-compile)"
 make -C "${PROOT_SRC}" -j"$(nproc)" \
