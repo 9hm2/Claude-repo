@@ -44,29 +44,43 @@ class LklService : Service() {
             }
 
         /**
-         * Halt + self-destruct.
+         * Halt + self-destruct — deadlock-rezisztens.
          *
-         * 1) NativeBridge.nativeLklStop() — `lkl_sys_halt` + `lkl_cleanup`.
-         * 2) stopSelf() — engedi a service-t leállítani.
-         * 3) Process.killProcess(myPid) ~150 ms múlva — bízzunk hogy a
-         *    Binder a halt-rc-t addig vissza tudta küldeni a kliensnek.
+         * Probléma: a `lkl_sys_halt` MEG TUD AKADNI, ha egy LKL kernel-thread
+         * elakadt (pl. vhci_hcd egy hibás sockfd-re vár). Ha közvetlenül
+         * hívnánk és blokkolunk rá, a `Process.killProcess` ütemezésig sem
+         * jutunk → az egész :lkl process holtmaradna, a UI-n a Stop befagy.
          *
-         * A fő process onServiceDisconnected-en érzékeli a kapcsolat-szakadást.
+         * Megoldás:
+         *   1) ELŐSZÖR ütemezünk egy feltétlen `killProcess`-t 300 ms múlva
+         *      — ez akkor is megöli a process-t ha minden más bedöglik.
+         *   2) Egy háttérszálon próbáljuk a `nativeLklStop()`-ot — ha
+         *      sikerül a kill előtt, tiszta shutdown; ha nem, a kill úgy is
+         *      megérkezik.
+         *   3) A Binder hívás azonnal visszatér 0-val a kliensnek — nem
+         *      blokkoljuk a fő process UI-szálát.
+         *
+         * A fő process az `onServiceDisconnected`-en érzékeli a process-halált.
          */
         override fun stopKernel(): Int {
-            val rc = try {
-                NativeBridge.nativeLklStop()
-            } catch (t: Throwable) {
-                Log.e(tag, "stopKernel hiba", t)
-                -1
-            }
-            Log.i(tag, "stopKernel rc=$rc; :lkl process self-destruct 150 ms múlva")
-            stopSelf()
+            // 1) Feltétlen self-destruct ütemezés — ez ÉL akkor is ha minden
+            //    más bedöglik (halt deadlock, JNI crash, stb.).
             Handler(Looper.getMainLooper()).postDelayed({
-                Log.i(tag, "Process.killProcess(myPid)")
+                Log.w(tag, "Process.killProcess(myPid) — stop deadline")
                 Process.killProcess(Process.myPid())
-            }, 150)
-            return rc
+            }, 300)
+            // 2) Háttér-halt próbálkozás. Ha végez < 300 ms-ben, tiszta
+            //    shutdown; ha túllóg, a fenti timer úgyis megöli a procit.
+            Thread({
+                try {
+                    val rc = NativeBridge.nativeLklStop()
+                    Log.i(tag, "nativeLklStop rc=$rc (háttér)")
+                } catch (t: Throwable) {
+                    Log.e(tag, "nativeLklStop hiba (háttér)", t)
+                }
+            }, "lkl-halt").start()
+            stopSelf()
+            return 0
         }
 
         override fun attachUsbDevice(
