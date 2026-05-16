@@ -179,23 +179,20 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
+# 4) Kali bash indítása proot chroot-on át.
 #
-# A binárisunk most a Termux fork-ja (fetch-termux-proot.sh-szal letöltve
-# a Termux apt repóból, patchelf-fel Android-compatible névkonvencióra
-# alakítva). Tartalmazza:
-#   --link2symlink  : hardlink→symlink wrap (Android W^X workaround)
-#   --kill-on-exit  : tracee meghal ha proot meghal (zombi-mentes)
-#   --root-id (-0)  : fake-root UID a chrooted scripteknek
-#   --kernel-release: kernel-spoofer (glibc-nek hazudunk modern kernelt)
+# A binárisunk az upstream proot-me v5.4.0 saját NDK-build-je (statikus
+# libtalloc + inline tracee-loader). Termux-szpecifikus flagek
+# (--link2symlink, -0/--root-id) NEM támogatottak — sajnos a -0 az
+# upstream-en silent 255-tel hal el seccomp inkompatibilitás miatt.
+# A `--kernel-release` viszont upstream-szabvány — a chrooted glibc-nek
+# hazudunk modern kernelt, hogy a 4.x Android-kerneleken se hibázzon
+# a syscall-introspekció.
 #
-# Bind-mountok a PRoot-Distro mintájára — anélkül a chrooted bash
-# tipikusan elhal /dev/random, /proc/stat, /dev/stdin stb. read-jén.
+# Bind-mountok a Termux PRoot-Distro mintájára — anélkül a chrooted bash
+# /dev/random, /dev/stdin read-jén elhalna.
 echo "─── proot indítása → /bin/bash ───"
 exec "${'$'}PROOT" \
-    --kill-on-exit \
-    --link2symlink \
-    -0 \
     --kernel-release=5.4.0-fake-kernel \
     -r "${'$'}ROOTFS_DIR" \
     -w "${'$'}USER_HOME" \
