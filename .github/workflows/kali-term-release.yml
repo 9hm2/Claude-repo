@@ -13,10 +13,22 @@ name: kali-term release
 on:
   push:
     paths:
-      - 'projects/kernel-build/**'
-      - 'projects/kali-term-app/**'
+      # Szigorúan csak valódi source-változások trigger-eljenek — ne fusson
+      # a workflow `.gitignore`, README, vagy lokális APK release commit-okra.
+      - 'projects/kernel-build/config/**'
+      - 'projects/kernel-build/patches/**'
+      - 'projects/kernel-build/scripts/**'
+      - 'projects/kernel-build/Makefile'
+      - 'projects/kernel-build/LKL_REVISION'
+      - 'projects/kali-rootfs/scripts/**'
+      - 'projects/kali-rootfs/Makefile'
+      - 'projects/kali-term-app/app/**'
+      - 'projects/kali-term-app/build.gradle.kts'
+      - 'projects/kali-term-app/settings.gradle.kts'
+      - 'projects/kali-term-app/gradle/**'
+      - 'projects/kali-term-app/gradle.properties'
+      - 'projects/kali-term-app/scripts/**'
       - 'projects/usb-bridge/**'
-      - 'projects/kali-rootfs/**'
       - '.github/workflows/kali-term-release.yml'
   workflow_dispatch:
 
@@ -211,9 +223,15 @@ jobs:
   apk:
     name: APK build (with LKL bundled)
     needs: [paths, lkl-android, kali-rootfs]
-    # MINDIG fut, kivéve ha minden upstream-függő job hibára futott:
+    # Akkor fut, ha az app filter igaz (vagy LKL/rootfs job upstream
+    # build-et adott le — pl. csak kernel-build változott, app NEM, de
+    # az új LKL-t mégis APK-ba csomagolnánk). Ha mindhárom filter false,
+    # nem fut le, így nincs felesleges artifact-download / quota-fail.
     if: |
       always() &&
+      (needs.paths.outputs.app == 'true' ||
+       needs.lkl-android.result == 'success' ||
+       needs.kali-rootfs.result == 'success') &&
       (needs.lkl-android.result == 'success' || needs.lkl-android.result == 'skipped') &&
       (needs.kali-rootfs.result == 'success' || needs.kali-rootfs.result == 'skipped')
     runs-on: ubuntu-latest
