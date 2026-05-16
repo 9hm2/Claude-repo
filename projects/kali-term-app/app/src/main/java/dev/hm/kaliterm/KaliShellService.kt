@@ -226,36 +226,60 @@ class KaliShellService : Service() {
      * Rekurzív walk az LKL fájlrendszerén — minden file-jét és sub-directory-jét
      * átmásolja a mirror-fába azonos relative-path-szerkezettel.
      *
-     * symlinkeket (subsystem/driver/module/of_node) skipel a sysfs circular-
-     * referencák ellen. Mély-limit dispatcher-overflow ellen véd.
+     * @param iface      LklService Binder-proxy
+     * @param lklRoot    az LKL-fa-szint amelyet tükrözünk (pl. "/proc", "/sys")
+     * @param mirrorRoot a host-mappa amibe írunk (lklRoot tartalma)
+     * @param maxDepth   recurzió-mély-limit (sysfs circular-symlinkek ellen)
+     * @param skipNames  sympbolic-link-szerű entry-k amik recursion-loopot
+     *                   okoznak (sysfs subsystem/driver/module/of_node)
+     *
+     * Symlinkek elkerülése: sysfs-szabványos `subsystem`/`driver`/`module`/
+     * `of_node` entry-k, illetve a /proc/<PID>/cwd/exe/root link-ek skipelve.
      */
     private fun recursivelyMirrorLklTree(
-        iface: ILklService, lklPath: String, mirrorRoot: File, maxDepth: Int,
-    ) {
-        if (maxDepth <= 0) return
+        iface: ILklService,
+        lklRoot: String,
+        lklPath: String,
+        mirrorRoot: File,
+        maxDepth: Int,
+        skipNames: Set<String> = setOf("subsystem", "driver", "module", "of_node",
+                                        "cwd", "exe", "root", "fd", "fdinfo"),
+    ): Int {
+        if (maxDepth <= 0) return 0
         val entries = runCatching { iface.listLklDir(lklPath) }.getOrDefault("")
             .lines().filter { it.isNotBlank() }
-        if (entries.isEmpty()) return
+        if (entries.isEmpty()) return 0
+        var count = 0
         for (entry in entries) {
             val name = entry.trim()
             if (name == "." || name == "..") continue
-            if (name in setOf("subsystem", "driver", "module", "of_node")) continue
+            if (name in skipNames) continue
             val childLklPath = "$lklPath/$name"
-            val content = runCatching { iface.readLklFile(childLklPath) }.getOrDefault("")
-            // A mirror-ben a /sys/ prefix után RELATIVE-paths
-            val rel = childLklPath.removePrefix("/sys/").removePrefix("/")
+            // A mirror-ben a lklRoot prefix után relative path
+            val rel = childLklPath.removePrefix("$lklRoot/").removePrefix("/")
             val out = File(mirrorRoot, rel)
+            val content = runCatching { iface.readLklFile(childLklPath) }.getOrDefault("")
             if (content.isNotEmpty()) {
                 out.parentFile?.mkdirs()
-                out.writeText(content)
+                runCatching { out.writeText(content) }
+                count++
             } else {
                 val sub = runCatching { iface.listLklDir(childLklPath) }.getOrDefault("")
                 if (sub.isNotBlank()) {
                     out.mkdirs()
-                    recursivelyMirrorLklTree(iface, childLklPath, mirrorRoot, maxDepth - 1)
+                    count += recursivelyMirrorLklTree(
+                        iface, lklRoot, childLklPath, mirrorRoot, maxDepth - 1, skipNames
+                    )
+                } else {
+                    // Üres-file (pl. char-device-placeholder): kreáljunk üres
+                    // regular-file-t, hogy `ls`-szel látható legyen
+                    out.parentFile?.mkdirs()
+                    runCatching { out.writeText("") }
+                    count++
                 }
             }
         }
+        return count
     }
 
     private fun populateLklProcMirror(rootfs: RootfsManager): String? {
@@ -299,125 +323,39 @@ class KaliShellService : Service() {
             return null
         }
 
-        // /proc mirror — már megvan az alábbi lista
-        val mirror = File(rootfs.prootTmpDir, "lkl-proc")
-        mirror.deleteRecursively()
-        mirror.mkdirs()
-
-        // Standard /proc fájlok az LKL kernelből. Bővebb listával a chrooted
-        // `ls /proc` az LKL-fa tartalmát mutatja, nem a host-Android-fájlokat.
-        val procFiles = listOf(
-            "version", "cpuinfo", "meminfo", "uptime", "stat",
-            "loadavg", "filesystems", "mounts", "modules",
-            "partitions", "swaps", "vmstat", "diskstats",
-            "interrupts", "softirqs", "buddyinfo", "zoneinfo",
-            "slabinfo", "iomem", "ioports", "cmdline", "consoles",
-            "devices", "execdomains", "fb", "kallsyms", "key-users",
-            "keys", "locks", "misc", "self/maps", "self/status",
-            "self/stat", "self/cmdline", "self/comm", "self/cwd",
-            "self/environ", "self/exe", "self/limits", "self/mountinfo",
-            "self/mounts", "self/mountstats",
-            "sys/kernel/osrelease",
-            "sys/kernel/ostype",
-            "sys/kernel/hostname",
-            "sys/kernel/version",
-            "sys/kernel/domainname",
-            "sys/kernel/random/boot_id",
-            "sys/kernel/random/uuid",
+        // /proc — TELJES rekurzív LKL-mirror. A whitelist-megközelítés helyett
+        // a teljes /proc-fa minden file-ját és sub-directory-jét átemeljük.
+        // Skipelendők: /proc/self (host-overlay-jel kezelve), /proc/<PID>/fd
+        // (recursion-veszély), kvázi-link entries.
+        val procMirror = File(rootfs.prootTmpDir, "lkl-proc")
+        procMirror.deleteRecursively()
+        procMirror.mkdirs()
+        val procHit = recursivelyMirrorLklTree(
+            iface, "/proc", "/proc", procMirror, maxDepth = 8,
+            skipNames = setOf("self", "thread-self",
+                              "cwd", "exe", "root", "fd", "fdinfo", "task"),
         )
-        var hit = 0
-        for (rel in procFiles) {
-            val content = runCatching { iface.readLklFile("/proc/$rel") }.getOrDefault("")
-            if (content.isNotEmpty()) {
-                val out = File(mirror, rel)
-                out.parentFile?.mkdirs()
-                out.writeText(content)
-                hit++
-            }
-        }
-        // Egy üres `sys`, `bus`, `tty` mappa is — a /proc/sys, /proc/bus stb.
-        // standard layout-jelei. (A chrooted bash sokszor csak directory-
-        // létezést ellenőriz, nem a tartalmat.)
-        listOf("sys/fs", "sys/net", "sys/vm", "bus", "tty", "fs", "net").forEach {
-            File(mirror, it).mkdirs()
-        }
-        Log.i(tag, "LKL proc-mirror: $hit fájl kiírva, osrelease=$osrelease")
+        Log.i(tag, "LKL /proc rekurzív mirror: $procHit fájl, osrelease=$osrelease")
 
-        // /sys mirror — az LKL kernel-szolgáltatta sysfs-fa. Az LKL-be a
-        // hozzáférhető fájlok listáját nem könnyen lehet enumerálni Binder-
-        // szinten, ezért egy ismert, gyakran látogatott halmazt kérdezünk le.
+        // /sys — TELJES rekurzív LKL-mirror. A sysfs symlink-loop-jai miatt
+        // (subsystem/driver/module/of_node) a recursivelyMirrorLklTree skipel.
         val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
         sysMirror.deleteRecursively()
         sysMirror.mkdirs()
-        val sysFiles = listOf(
-            "kernel/hostname", "kernel/osrelease", "kernel/ostype",
-            "kernel/version", "kernel/kexec_loaded",
-            "kernel/modules", "kernel/uevent_helper",
-            "kernel/cgroup/sane_behavior",
-            "module/printk/parameters/console_no_auto_verbose",
-            "fs/cgroup/cgroup.controllers",
-            "class/net/lo/address",
-            "class/net/lo/mtu",
-            "class/net/lo/operstate",
-            "class/tty/console/active",
-            "bus/usb/devices",  // directory listing — gyakran üres / lo only
-            "devices/system/cpu/online",
-            "devices/system/cpu/possible",
-            "devices/system/cpu/present",
-            "devices/virtual/dmi/id/product_name",
-            "devices/virtual/dmi/id/sys_vendor",
-            "power/state",
-            "block",
+        val sysHit = recursivelyMirrorLklTree(
+            iface, "/sys", "/sys", sysMirror, maxDepth = 10,
         )
-        var sysHit = 0
-        for (rel in sysFiles) {
-            val content = runCatching { iface.readLklFile("/sys/$rel") }.getOrDefault("")
-            if (content.isNotEmpty()) {
-                val out = File(sysMirror, rel)
-                out.parentFile?.mkdirs()
-                out.writeText(content)
-                sysHit++
-            }
-        }
-        // Standard /sys directory-skeleton (a chrooted programok directory-
-        // létezést ellenőriznek)
-        listOf(
-            "bus", "class", "dev", "devices", "firmware", "fs",
-            "kernel", "module", "power", "block",
-        ).forEach { File(sysMirror, it).mkdirs() }
+        Log.i(tag, "LKL /sys rekurzív mirror: $sysHit fájl")
 
-        // /sys/bus/usb/devices/* — rekurzív mirror az LKL-fáról. A chrooted
-        // `lsusb`, `usbtools`, libusb-sysfs-backend ezt olvassa USB-eszköz-
-        // enumeráláshoz. Az LKL `vhci_hcd`-jén attach-elt USB-IP eszközök
-        // mind itt jelennek meg (usb1, 2-1, 2-1:1.0, …).
-        recursivelyMirrorLklTree(iface, "/sys/bus/usb/devices", sysMirror, maxDepth = 6)
-        recursivelyMirrorLklTree(iface, "/sys/class/usbmisc", sysMirror, maxDepth = 4)
-        recursivelyMirrorLklTree(iface, "/sys/class/tty", sysMirror, maxDepth = 4)
-        recursivelyMirrorLklTree(iface, "/sys/class/net", sysMirror, maxDepth = 4)
-        recursivelyMirrorLklTree(iface, "/sys/devices/platform/vhci_hcd.0", sysMirror, maxDepth = 5)
-
-        Log.i(tag, "LKL sys-mirror: $sysHit fájl + USB-fa")
-
-        // /dev mirror — az LKL kernel device-nodok-listet getdents64-szel
-        // listázzuk, és minden entry-re egy ÜRES placeholder regular-fájlt
-        // készítünk. A launch.sh ezeket EGYESÉVEL bind-mountolja a host
-        // megfelelő `/dev/*` char-device-eire (null, zero, urandom, tty).
-        // Eredmény: `ls /dev` az LKL device-listát mutatja (NEM a
-        // Samsung/Qualcomm Android device-okat), és a working device-ok
-        // (null, zero, urandom, …) a host-ból read-write-elhetőek.
+        // /dev — TELJES rekurzív LKL-mirror. A char-device-okat üres-fájlként
+        // tükrözzük (a launch.sh felülírja a host /dev/{null,zero,urandom,…}-mal).
         val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
         devMirror.deleteRecursively()
         devMirror.mkdirs()
-        val devList = runCatching { iface.listLklDir("/dev") }.getOrDefault("")
-        var devHit = 0
-        devList.lines().filter { it.isNotBlank() }.forEach { name ->
-            val out = File(devMirror, name.trim())
-            if (out.path.startsWith(devMirror.path)) {
-                out.writeText("")  // placeholder; bind-mount felülírja host-fájllal
-                devHit++
-            }
-        }
-        Log.i(tag, "LKL dev-mirror: $devHit entry listázva")
+        val devHit = recursivelyMirrorLklTree(
+            iface, "/dev", "/dev", devMirror, maxDepth = 6,
+        )
+        Log.i(tag, "LKL /dev rekurzív mirror: $devHit entry")
 
         return osrelease
     }
