@@ -294,6 +294,7 @@ set -- "${'$'}@" \
         TERM="${'$'}{TERM:-xterm-256color}" \
         TMPDIR=/tmp \
         LANG=C.UTF-8 \
+        LIBUSB_DISABLE_UDEV=1 \
         /bin/bash --login
 exec "${'$'}@"
 

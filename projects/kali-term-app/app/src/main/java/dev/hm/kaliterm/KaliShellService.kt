@@ -458,6 +458,28 @@ class KaliShellService : Service() {
             Log.w(tag, "/dev/bus/usb placeholder error: ${t.message}")
         }
 
+        // /proc/mounts standard layout — a libusb a `sysfs not mounted`-ra
+        // bukik el a /proc/mounts hiányában. Kreáljuk a 4 alap mount-bejegyzést
+        // amit a chrooted bash, libusb, modprobe, df elvár.
+        try {
+            val mountsFile = File(procMirror, "mounts")
+            mountsFile.parentFile?.mkdirs()
+            mountsFile.writeText(
+                "rootfs / rootfs rw 0 0\n" +
+                "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n" +
+                "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n" +
+                "devtmpfs /dev devtmpfs rw,nosuid 0 0\n" +
+                "devpts /dev/pts devpts rw,nosuid,noexec,relatime 0 0\n"
+            )
+            // /proc/self/mounts is — a libusb sokszor inkább erre néz
+            val selfMounts = File(procMirror, "self/mounts")
+            selfMounts.parentFile?.mkdirs()
+            selfMounts.writeText(mountsFile.readText())
+            Log.d(tag, "/proc/mounts standardizálva (sysfs/proc/devtmpfs/devpts)")
+        } catch (t: Throwable) {
+            Log.w(tag, "/proc/mounts write error: ${t.message}")
+        }
+
         Log.i(tag, "populateLklProcMirror DONE — return osrelease=$osrelease")
 
         return osrelease
