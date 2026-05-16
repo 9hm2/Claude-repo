@@ -120,7 +120,12 @@ class KaliShellService : Service() {
          * Binder-bind-elés-szel és Thread.sleep-pel jár, ami main-szálon
          * deadlock-ot okozna. A `getOrCreateSession()` az itt feltöltött
          * `lklProcOsrelease`-t használja az env-be.
+         *
+         * @Synchronized: a LaunchedEffect-cancel/restart 2x indíthatja
+         * párhuzamosan; a synchronized csak az ELSŐ indítást engedi, a
+         * második wait-tel az első eredményére.
          */
+        @Synchronized
         fun prepareLklMirror(rootfs: RootfsManager) {
             lklProcOsrelease = populateLklProcMirror(rootfs)
         }
@@ -226,15 +231,12 @@ class KaliShellService : Service() {
      * Rekurzív walk az LKL fájlrendszerén — minden file-jét és sub-directory-jét
      * átmásolja a mirror-fába azonos relative-path-szerkezettel.
      *
-     * @param iface      LklService Binder-proxy
-     * @param lklRoot    az LKL-fa-szint amelyet tükrözünk (pl. "/proc", "/sys")
-     * @param mirrorRoot a host-mappa amibe írunk (lklRoot tartalma)
-     * @param maxDepth   recurzió-mély-limit (sysfs circular-symlinkek ellen)
-     * @param skipNames  sympbolic-link-szerű entry-k amik recursion-loopot
-     *                   okoznak (sysfs subsystem/driver/module/of_node)
-     *
-     * Symlinkek elkerülése: sysfs-szabványos `subsystem`/`driver`/`module`/
-     * `of_node` entry-k, illetve a /proc/<PID>/cwd/exe/root link-ek skipelve.
+     * Skip-szabályok (perf-szempontból kritikus, mert 1 Binder-call/file
+     * az UI-szálat blokkolná):
+     *   - All-digit nevek (e.g. /proc/1, /proc/123) — process-mappák
+     *   - "slab", "cache" — /sys/kernel/slab/<NAME>/{NAME} kvázi-explosion
+     *   - sysfs circular-link entries
+     *   - per-directory cap (max 30 entry) — anomálisan nagy mappákat skipel
      */
     private fun recursivelyMirrorLklTree(
         iface: ILklService,
@@ -242,20 +244,29 @@ class KaliShellService : Service() {
         lklPath: String,
         mirrorRoot: File,
         maxDepth: Int,
-        skipNames: Set<String> = setOf("subsystem", "driver", "module", "of_node",
-                                        "cwd", "exe", "root", "fd", "fdinfo"),
+        skipNames: Set<String> = DEFAULT_SKIP_NAMES,
     ): Int {
         if (maxDepth <= 0) return 0
         val entries = runCatching { iface.listLklDir(lklPath) }.getOrDefault("")
             .lines().filter { it.isNotBlank() }
         if (entries.isEmpty()) return 0
         var count = 0
-        for (entry in entries) {
+        // Per-directory entry-cap — szélsőséges esetekben (/sys/kernel/slab,
+        // /sys/devices/system/cpu/cpu*) ezrek a entry-k vannak. 30 felett
+        // skipelünk: a "fejlécfájlokat" kapja meg a chrooted, a részletes
+        // attribútumokat NEM.
+        val MAX_ENTRIES_PER_DIR = 30
+        val takenEntries = entries.take(MAX_ENTRIES_PER_DIR)
+        if (entries.size > MAX_ENTRIES_PER_DIR) {
+            Log.d(tag, "skip ${entries.size - MAX_ENTRIES_PER_DIR} extra entries in $lklPath")
+        }
+        for (entry in takenEntries) {
             val name = entry.trim()
             if (name == "." || name == "..") continue
             if (name in skipNames) continue
+            // All-digit nevek: process-mappák /proc-en, slab-cache-számok stb.
+            if (name.all { it.isDigit() }) continue
             val childLklPath = "$lklPath/$name"
-            // A mirror-ben a lklRoot prefix után relative path
             val rel = childLklPath.removePrefix("$lklRoot/").removePrefix("/")
             val out = File(mirrorRoot, rel)
             val content = runCatching { iface.readLklFile(childLklPath) }.getOrDefault("")
@@ -271,8 +282,6 @@ class KaliShellService : Service() {
                         iface, lklRoot, childLklPath, mirrorRoot, maxDepth - 1, skipNames
                     )
                 } else {
-                    // Üres-file (pl. char-device-placeholder): kreáljunk üres
-                    // regular-file-t, hogy `ls`-szel látható legyen
                     out.parentFile?.mkdirs()
                     runCatching { out.writeText("") }
                     count++
@@ -280,6 +289,23 @@ class KaliShellService : Service() {
             }
         }
         return count
+    }
+
+    companion object {
+        private val DEFAULT_SKIP_NAMES = setOf(
+            // sysfs symlink-loop
+            "subsystem", "driver", "module", "of_node",
+            // /proc/<PID>-szintű link-ek
+            "cwd", "exe", "root", "fd", "fdinfo", "task",
+            // /sys/kernel/slab — több ezer slab-cache, fölösleges chrootnak
+            "slab", "cache",
+            // /sys/devices/*/power — runtime-PM állapotok, kvázi-explosion
+            "power",
+            // /sys/firmware/efi — UEFI-state, nem releváns
+            "efi",
+            // /proc-szinten thread-self és self host-overlay-jel kezelve
+            "self", "thread-self",
+        )
     }
 
     private fun populateLklProcMirror(rootfs: RootfsManager): String? {
