@@ -108,6 +108,14 @@ class KaliShellService : Service() {
         }
 
         /**
+         * Rekurzív LKL-fájlfa mirror: pl. `/sys/bus/usb/devices/` minden
+         * sub-directory-jét és fájlját átmásolja a chrooted-mirror-be.
+         * A symlinkeket (subsystem/driver/module/of_node) skipeli a
+         * sysfs-circular-loop ellen.
+         */
+        // -- delegál a Service-szintű private helperre (alább) --
+
+        /**
          * Feltölti az LKL /proc mirror-t IO-szálról KÖTELEZŐ hívni —
          * Binder-bind-elés-szel és Thread.sleep-pel jár, ami main-szálon
          * deadlock-ot okozna. A `getOrCreateSession()` az itt feltöltött
@@ -214,6 +222,42 @@ class KaliShellService : Service() {
      * @return LKL kernel `osrelease` stringe (pl. "5.18.0"), vagy `null`
      *   ha az LKL nem elérhető.
      */
+    /**
+     * Rekurzív walk az LKL fájlrendszerén — minden file-jét és sub-directory-jét
+     * átmásolja a mirror-fába azonos relative-path-szerkezettel.
+     *
+     * symlinkeket (subsystem/driver/module/of_node) skipel a sysfs circular-
+     * referencák ellen. Mély-limit dispatcher-overflow ellen véd.
+     */
+    private fun recursivelyMirrorLklTree(
+        iface: ILklService, lklPath: String, mirrorRoot: File, maxDepth: Int,
+    ) {
+        if (maxDepth <= 0) return
+        val entries = runCatching { iface.listLklDir(lklPath) }.getOrDefault("")
+            .lines().filter { it.isNotBlank() }
+        if (entries.isEmpty()) return
+        for (entry in entries) {
+            val name = entry.trim()
+            if (name == "." || name == "..") continue
+            if (name in setOf("subsystem", "driver", "module", "of_node")) continue
+            val childLklPath = "$lklPath/$name"
+            val content = runCatching { iface.readLklFile(childLklPath) }.getOrDefault("")
+            // A mirror-ben a /sys/ prefix után RELATIVE-paths
+            val rel = childLklPath.removePrefix("/sys/").removePrefix("/")
+            val out = File(mirrorRoot, rel)
+            if (content.isNotEmpty()) {
+                out.parentFile?.mkdirs()
+                out.writeText(content)
+            } else {
+                val sub = runCatching { iface.listLklDir(childLklPath) }.getOrDefault("")
+                if (sub.isNotBlank()) {
+                    out.mkdirs()
+                    recursivelyMirrorLklTree(iface, childLklPath, mirrorRoot, maxDepth - 1)
+                }
+            }
+        }
+    }
+
     private fun populateLklProcMirror(rootfs: RootfsManager): String? {
         // Bind-el ha még nincs
         if (lklIface == null) {
@@ -341,7 +385,18 @@ class KaliShellService : Service() {
             "bus", "class", "dev", "devices", "firmware", "fs",
             "kernel", "module", "power", "block",
         ).forEach { File(sysMirror, it).mkdirs() }
-        Log.i(tag, "LKL sys-mirror: $sysHit fájl kiírva")
+
+        // /sys/bus/usb/devices/* — rekurzív mirror az LKL-fáról. A chrooted
+        // `lsusb`, `usbtools`, libusb-sysfs-backend ezt olvassa USB-eszköz-
+        // enumeráláshoz. Az LKL `vhci_hcd`-jén attach-elt USB-IP eszközök
+        // mind itt jelennek meg (usb1, 2-1, 2-1:1.0, …).
+        recursivelyMirrorLklTree(iface, "/sys/bus/usb/devices", sysMirror, maxDepth = 6)
+        recursivelyMirrorLklTree(iface, "/sys/class/usbmisc", sysMirror, maxDepth = 4)
+        recursivelyMirrorLklTree(iface, "/sys/class/tty", sysMirror, maxDepth = 4)
+        recursivelyMirrorLklTree(iface, "/sys/class/net", sysMirror, maxDepth = 4)
+        recursivelyMirrorLklTree(iface, "/sys/devices/platform/vhci_hcd.0", sysMirror, maxDepth = 5)
+
+        Log.i(tag, "LKL sys-mirror: $sysHit fájl + USB-fa")
 
         // /dev mirror — az LKL kernel device-nodok-listet getdents64-szel
         // listázzuk, és minden entry-re egy ÜRES placeholder regular-fájlt
