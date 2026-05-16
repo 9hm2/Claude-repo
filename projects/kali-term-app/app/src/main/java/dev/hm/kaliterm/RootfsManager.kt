@@ -179,43 +179,46 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Kali bash indítása proot chroot-on át.
-#
-# A binárisunk az upstream proot-me v5.4.0 saját NDK-build-je (statikus
-# libtalloc + inline tracee-loader). Termux-szpecifikus flagek
-# (--link2symlink, -0/--root-id) NEM támogatottak — sajnos a -0 az
-# upstream-en silent 255-tel hal el seccomp inkompatibilitás miatt.
-# A `--kernel-release` viszont upstream-szabvány — a chrooted glibc-nek
-# hazudunk modern kernelt, hogy a 4.x Android-kerneleken se hibázzon
-# a syscall-introspekció.
-#
-# Bind-mountok a Termux PRoot-Distro mintájára — anélkül a chrooted bash
-# /dev/random, /dev/stdin read-jén elhalna.
-echo "─── proot indítása → /bin/bash ───"
-exec "${'$'}PROOT" \
-    --kernel-release=5.4.0-fake-kernel \
-    -r "${'$'}ROOTFS_DIR" \
-    -w "${'$'}USER_HOME" \
-    -b /dev \
-    -b /proc \
-    -b /sys \
+# 4) Proot indítási diagnosztika — minden lépés stderr→stdout-tal,
+#    NEM exec-szel hogy a kimenet tovább-folytatódjon az első hibánál.
+echo "─── [A] proot -r ROOTFS /bin/bash --login -c 'echo OK' ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/bash --login -c 'echo BASH-HELLO; uname -a; pwd; whoami' 2>&1
+echo "[A] rc=${'$'}?"
+echo
+
+echo "─── [B] proot + --kernel-release ───"
+"${'$'}PROOT" --kernel-release=5.4.0-fake-kernel -r "${'$'}ROOTFS_DIR" \
+    /bin/bash --login -c 'echo TEST-B; uname -r' 2>&1
+echo "[B] rc=${'$'}?"
+echo
+
+echo "─── [C] proot + bind /dev /proc /sys ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" \
+    -b /dev -b /proc -b /sys \
+    /bin/bash --login -c 'echo TEST-C; ls /dev | head -5' 2>&1
+echo "[C] rc=${'$'}?"
+echo
+
+echo "─── [D] proot + Termux fd-bindjelölői ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" \
+    -b /dev -b /proc -b /sys \
     -b /proc/self/fd/0:/dev/stdin \
     -b /proc/self/fd/1:/dev/stdout \
     -b /proc/self/fd/2:/dev/stderr \
-    -b /proc/self/fd:/dev/fd \
     -b /dev/urandom:/dev/random \
-    -b /dev/null:/proc/sys/kernel/cap_last_cap \
-    /usr/bin/env -i \
-        HOME="${'$'}USER_HOME" \
-        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        TERM="${'$'}{TERM:-xterm-256color}" \
-        TMPDIR=/tmp \
-        LANG=C.UTF-8 \
-        /bin/bash --login
+    /bin/bash --login -c 'echo TEST-D' 2>&1
+echo "[D] rc=${'$'}?"
+echo
 
-# Ide csak akkor jutunk, ha az exec proot SIKERTELEN volt.
-echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
-echo "Drop to Android sh."
+echo "─── [E] proot + env -i + workdir ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" -w "${'$'}USER_HOME" \
+    -b /dev -b /proc -b /sys \
+    /usr/bin/env -i HOME="${'$'}USER_HOME" PATH=/usr/bin:/bin TERM=xterm-256color \
+        /bin/bash --login -c 'echo TEST-E; pwd; env | head -10' 2>&1
+echo "[E] rc=${'$'}?"
+echo
+
+echo "── Diag vége; Android sh drop ──"
 exec /system/bin/sh
 """
 
