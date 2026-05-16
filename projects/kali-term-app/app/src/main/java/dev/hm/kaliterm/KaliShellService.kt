@@ -7,6 +7,7 @@ import android.os.IBinder
 import android.util.Log
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import java.io.File
 
 /**
  * Termux `TermuxService` mintára: a `TerminalSession` lifecycle-ja Service-ből
@@ -52,16 +53,26 @@ class KaliShellService : Service() {
             session?.let { return it }
             // PROOT az APK nativeLibraryDir-ből (libproot.so), NEM a filesDir-ből.
             // Lásd RootfsManager.nativeProot — Android W^X policy miatt.
+            // Termux proot a saját statikus ELF-loader-jét hardcoded
+            // `/data/data/com.termux/files/usr/libexec/proot/loader`-en
+            // keresi. A `PROOT_LOADER` env-overrideol — mi a jniLibs-be
+            // pakolt `libproot_loader.so` névre mutatunk.
+            val prootLoader = File(ctx.applicationInfo.nativeLibraryDir, "libproot_loader.so")
             val env = arrayOf(
                 "HOME=${rootfs.bundleDir.absolutePath}",
                 "PREFIX=${rootfs.bundleDir.absolutePath}",
                 "ROOTFS_DIR=${rootfs.rootfsDir.absolutePath}",
                 "PROOT=${rootfs.nativeProot.absolutePath}",
+                "PROOT_LOADER=${prootLoader.absolutePath}",
                 // PROOT_TMP_DIR + TMPDIR — proot kötelezően kér egy writable
                 // temp-mappát a mountpoint-emulation cache-jéhez. Android-on
                 // nincs /tmp, ezért a filesDir alá tesszük (writable+exec).
                 "PROOT_TMP_DIR=${rootfs.prootTmpDir.absolutePath}",
                 "TMPDIR=${rootfs.prootTmpDir.absolutePath}",
+                // LD_LIBRARY_PATH — a proot dinamikusan linkelt libtalloc.so-ra,
+                // ami a nativeLibraryDir-ben van. Default-ban az Android linker
+                // ezt megtalálja, de explicit beállítva biztosabb.
+                "LD_LIBRARY_PATH=${ctx.applicationInfo.nativeLibraryDir}",
                 "USER_HOME=/root",
                 "TERM=xterm-256color",
                 "LANG=C.UTF-8",

@@ -30,13 +30,15 @@ extract_from_deb() {
         curl -fL --retry 4 --retry-delay 2 -o "${deb_file}" "${deb_url}"
     fi
     local work="${deb_file}.unpack"
-    rm -rf "${work}"; mkdir -p "${work}"
-    # absolute path — `cd ${work}` után a relatív útvonal elveszne
-    local deb_abs; deb_abs="$(realpath "${deb_file}")"
-    ( cd "${work}" && ar x "${deb_abs}" )
-    local data_tar; data_tar=$(find "${work}" -maxdepth 1 -name 'data.tar.*' | head -1)
-    [[ -n "${data_tar}" ]] || { echo "[fetch-termux-proot] HIBA: data.tar.* nincs ${deb_file}-ben" >&2; return 2; }
-    mkdir -p "${work}/data"; tar -xf "${data_tar}" -C "${work}/data"
+    if [[ ! -d "${work}/data" ]]; then
+        rm -rf "${work}"; mkdir -p "${work}"
+        # absolute path — `cd ${work}` után a relatív útvonal elveszne
+        local deb_abs; deb_abs="$(realpath "${deb_file}")"
+        ( cd "${work}" && ar x "${deb_abs}" )
+        local data_tar; data_tar=$(find "${work}" -maxdepth 1 -name 'data.tar.*' | head -1)
+        [[ -n "${data_tar}" ]] || { echo "[fetch-termux-proot] HIBA: data.tar.* nincs ${deb_file}-ben" >&2; return 2; }
+        mkdir -p "${work}/data"; tar -xf "${data_tar}" -C "${work}/data"
+    fi
     local found; found=$(find "${work}/data" -type f -name "${target_filename}" | head -1)
     [[ -n "${found}" ]] || { echo "[fetch-termux-proot] HIBA: ${target_filename} nincs ${deb_file}-ben" >&2; find "${work}/data" -type f | head -20 >&2; return 3; }
     cp -v "${found}" "${out_path}"
@@ -60,6 +62,16 @@ extract_from_deb \
     "${DL_DIR}/proot"
 chmod +x "${DL_DIR}/proot"
 
+# 2b) proot loader — statikus tracee-ELF, a proot futás közben fork-exec-eli.
+#     Termux hardcoded path-t használ: /data/data/com.termux/files/usr/libexec/proot/loader
+#     Mi a `PROOT_LOADER` env-tel overrideoljuk a Kotlin-oldalon.
+extract_from_deb \
+    "${REPO_BASE}/p/proot/proot_${PROOT_VER}_aarch64.deb" \
+    "${DL_DIR}/proot_${PROOT_VER}_aarch64.deb" \
+    "loader" \
+    "${DL_DIR}/proot_loader"
+chmod +x "${DL_DIR}/proot_loader"
+
 # 3) ELF-patch: Android jniLibs csak `lib*.so` mintát fogad el. A Termux
 #    proot DT_NEEDED-je `libtalloc.so.2` (Linux-szokvány), és a libtalloc
 #    SONAME-ja is `libtalloc.so.2`. Mindkettőt `libtalloc.so`-ra patcheljük,
@@ -81,5 +93,6 @@ echo
 echo "=== resultados ==="
 file "${DL_DIR}/proot" || true
 file "${DL_DIR}/libtalloc.so" || true
-ls -lh "${DL_DIR}/proot" "${DL_DIR}/libtalloc.so"
+file "${DL_DIR}/proot_loader" || true
+ls -lh "${DL_DIR}/proot" "${DL_DIR}/libtalloc.so" "${DL_DIR}/proot_loader"
 echo "[fetch-termux-proot] kész"
