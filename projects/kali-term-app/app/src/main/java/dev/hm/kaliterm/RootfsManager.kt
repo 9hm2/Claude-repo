@@ -62,6 +62,7 @@ class RootfsManager(private val ctx: Context) {
      * Előkészíti a rootfs-t. UI-thread-en NE hívd — ez lassú (tar+xz).
      * @return null ha sikeres, vagy hibaüzenet.
      */
+    @Synchronized
     fun prepare(progressCb: ((String) -> Unit)? = null): String? {
         try {
             bundleDir.mkdirs()
@@ -286,13 +287,16 @@ exec /system/bin/sh
     }
 
     private fun extractEntry(entry: TarArchiveEntry, tar: TarArchiveInputStream, dst: File) {
-        // Path-traversal védelem: `..` semmilyen formában ne kerülhessen ki
-        // a célmappából.
-        val out = File(dst, entry.name).canonicalFile
-        if (!out.path.startsWith(dst.canonicalPath + File.separator) && out.path != dst.canonicalPath) {
+        // Path-traversal védelem string-szintű normalizációval. NEM
+        // canonicalFile-lal — az követné a symlinkeket, és a Kali
+        // usr-merged layout (/bin → usr/bin, /sbin → usr/sbin, /lib → usr/lib)
+        // "Too many symbolic links" ELOOP-pal halna el.
+        val normalized = java.nio.file.Paths.get(entry.name).normalize()
+        if (normalized.isAbsolute || normalized.toString().startsWith("..")) {
             Log.w(tag, "skip path-traversal: ${entry.name}")
             return
         }
+        val out = File(dst, normalized.toString())
 
         when {
             entry.isDirectory -> {
@@ -314,7 +318,15 @@ exec /system/bin/sh
                 try {
                     Os.link(src.absolutePath, out.absolutePath)
                 } catch (e: Throwable) {
-                    Log.w(tag, "hardlink failed ${entry.name} → ${entry.linkName}: ${e.message}")
+                    // Hardlink EACCES Android-on: a `app_data_file:s0` SELinux
+                    // context tiltja a hardlink-et. Termux-pattern: fallback
+                    // symlink-re. (A proot --link2symlink flagje már átveszi
+                    // szemantikailag a chrooted oldalon.)
+                    try {
+                        Os.symlink(entry.linkName, out.absolutePath)
+                    } catch (e2: Throwable) {
+                        Log.w(tag, "hardlink+symlink failed ${entry.name} → ${entry.linkName}: ${e.message}; sym: ${e2.message}")
+                    }
                 }
             }
             entry.isFile -> {
