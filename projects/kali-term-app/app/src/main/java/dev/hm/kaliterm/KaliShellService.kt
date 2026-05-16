@@ -54,16 +54,12 @@ class KaliShellService : Service() {
             session?.let { return it }
             // PROOT az APK nativeLibraryDir-ből (libproot.so), NEM a filesDir-ből.
             // Lásd RootfsManager.nativeProot — Android W^X policy miatt.
-            // LKL-proc-mirror: a futó LKL kernel /proc fájljait kiírjuk a
-            // filesDir/proot-tmp/lkl-proc/ mappába, és a launch.sh
-            // bind-mountolja a chrooted /proc helyettesítőjeként. Ezzel a
-            // chroot Kali bash `uname -r`, `cat /proc/version`, /cpuinfo
-            // stb. az LKL kernelből kap választ, NEM az Android-host kernelből.
             //
-            // A `:lkl` Service-hez Binder-en kötünk — ha bind nem ready
-            // (kernel még nincs boot-olva), a launch.sh fallback-el a host-/proc-ra.
-            val lklRelease = populateLklProcMirror(rootfs)
-                ?: "6.1.0-kali"
+            // LKL_KERNEL_RELEASE: a `prepareLklMirror()` előre IO-szálon
+            // hívott, és a $filesDir/proot-tmp/lkl-proc/ mappát feltöltötte.
+            // A `lklProcOsrelease` field-en tárolt érték az osrelease (vagy
+            // "6.1.0-kali" fallback ha az LKL nem ready volt).
+            val lklRelease = lklProcOsrelease ?: "6.1.0-kali"
             Log.i(tag, "LKL_KERNEL_RELEASE = $lklRelease")
 
             val lklProcDir = File(rootfs.prootTmpDir, "lkl-proc")
@@ -103,6 +99,16 @@ class KaliShellService : Service() {
             )
             session = s
             return s
+        }
+
+        /**
+         * Feltölti az LKL /proc mirror-t IO-szálról KÖTELEZŐ hívni —
+         * Binder-bind-elés-szel és Thread.sleep-pel jár, ami main-szálon
+         * deadlock-ot okozna. A `getOrCreateSession()` az itt feltöltött
+         * `lklProcOsrelease`-t használja az env-be.
+         */
+        fun prepareLklMirror(rootfs: RootfsManager) {
+            lklProcOsrelease = populateLklProcMirror(rootfs)
         }
 
         /**
@@ -171,6 +177,11 @@ class KaliShellService : Service() {
             Log.e(t ?: tag, "", e)
         }
     }
+
+    /** Az utolsó `prepareLklMirror()` által kiolvasott LKL osrelease string,
+     *  vagy null ha a kernel nem volt elérhető. A `getOrCreateSession` ezt
+     *  használja a `LKL_KERNEL_RELEASE` env-be. */
+    @Volatile private var lklProcOsrelease: String? = null
 
     /** A LklService-Binder cache — a Service-szintű bind-elésen át. */
     @Volatile private var lklIface: ILklService? = null
