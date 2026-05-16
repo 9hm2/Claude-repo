@@ -131,6 +131,27 @@ EOF
     fi
 done
 
+# Patch: TerminalView.updateSize() null-guard a mRenderer-re. A
+# Compose-os AndroidView interop layout-pass-ben hív onSizeChanged-et
+# MIELŐTT a factory-block setTextSize/setTypeface-szel a renderert
+# inicializálná. Stock Termux-ban ez NPE: `mFontWidth on null object
+# reference`. Defenzív early-return — a hívó (setTextSize/setTypeface/
+# attachSession) később úgyis újra-hívja az updateSize-t.
+TV_JAVA="${PROJ_DIR}/terminal-view/src/main/java/com/termux/view/TerminalView.java"
+if ! grep -q "if (mRenderer == null) return;" "${TV_JAVA}"; then
+    echo "[termux] patch TerminalView.updateSize — mRenderer null-guard"
+    python3 - "${TV_JAVA}" <<'EOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+src = p.read_text()
+needle = "if (viewWidth == 0 || viewHeight == 0 || mTermSession == null) return;"
+if needle not in src:
+    sys.exit(f"patch anchor nincs meg: {needle}")
+patch = needle + "\n        if (mRenderer == null) return;"
+p.write_text(src.replace(needle, patch, 1))
+EOF
+fi
+
 echo "[termux] kész:"
 ls -la "${PROJ_DIR}/terminal-emulator"
 ls -la "${PROJ_DIR}/terminal-view"

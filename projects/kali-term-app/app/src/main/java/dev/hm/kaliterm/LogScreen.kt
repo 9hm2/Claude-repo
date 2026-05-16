@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -103,12 +102,12 @@ fun LogScreen(onBack: () -> Unit = {}) {
         )
 
         Spacer(Modifier.height(4.dp))
-        // FONTOS: NEM SelectionContainer + LazyColumn — az kombináció
-        // `NoSuchElementException: Cannot find value for key N`-nel crashel
-        // (Compose SelectionManager bug, recycle-elt LazyColumn item-eken).
-        // Helyette: sima Column verticalScroll-lal + per-sor SelectionContainer.
-        // Trade-off: minden sor egyszerre allokálódik (lassabb 10k+ sor felett),
-        // de stabil — és a logok jelenleg ≤2000 sor.
+        // FONTOS: NINCS SelectionContainer — a Compose SelectionManager-ben
+        // bug van, drag-szelekciónál `NoSuchElementException: Cannot find
+        // value for key N`-nel crashel (LongIntMap.get, lásd 1.7.x). A
+        // szöveg-másolásra a fenti "Másol" gomb való. A LazyColumn-ról is
+        // lemondunk: minden sor allokálódik egyszerre, de stabil — és a
+        // logok jelenleg ≤2000 sor.
         val scrollState = rememberScrollState()
         Column(
             modifier = Modifier
@@ -123,16 +122,14 @@ fun LogScreen(onBack: () -> Unit = {}) {
                     line.startsWith("=== kaliterm crash") -> MaterialTheme.colorScheme.error
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
-                SelectionContainer {
-                    Text(
-                        text = line,
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                        ),
-                        color = color,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                    )
-                }
+                Text(
+                    text = line,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                    ),
+                    color = color,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                )
             }
         }
     }
