@@ -327,35 +327,68 @@ class KaliShellService : Service() {
         // a teljes /proc-fa minden file-ját és sub-directory-jét átemeljük.
         // Skipelendők: /proc/self (host-overlay-jel kezelve), /proc/<PID>/fd
         // (recursion-veszély), kvázi-link entries.
+        //
+        // CACHE: ha a mirror <10 perce frissült, skipeljük. A user UI-élmény
+        // szempontjából a 40+ sec-os bind sokszori ismétlése elfogadhatatlan;
+        // a kernel-state minimum változik 10 perces ablakban.
         val procMirror = File(rootfs.prootTmpDir, "lkl-proc")
-        procMirror.deleteRecursively()
-        procMirror.mkdirs()
-        val procHit = recursivelyMirrorLklTree(
-            iface, "/proc", "/proc", procMirror, maxDepth = 8,
-            skipNames = setOf("self", "thread-self",
-                              "cwd", "exe", "root", "fd", "fdinfo", "task"),
-        )
-        Log.i(tag, "LKL /proc rekurzív mirror: $procHit fájl, osrelease=$osrelease")
+        val procReady = File(procMirror, ".kaliterm-mirror-ready")
+        val procFresh = procReady.exists() &&
+            (System.currentTimeMillis() - procReady.lastModified()) < 10 * 60_000L
+        val procHit = if (procFresh) {
+            Log.i(tag, "LKL /proc cache HIT — skip populate")
+            procMirror.list()?.size ?: 0
+        } else {
+            procMirror.deleteRecursively()
+            procMirror.mkdirs()
+            val hit = recursivelyMirrorLklTree(
+                iface, "/proc", "/proc", procMirror, maxDepth = 5,
+                skipNames = setOf("self", "thread-self",
+                                  "cwd", "exe", "root", "fd", "fdinfo", "task"),
+            )
+            procReady.writeText("ready ${System.currentTimeMillis()}\n")
+            Log.i(tag, "LKL /proc rekurzív mirror: $hit fájl, osrelease=$osrelease")
+            hit
+        }
 
         // /sys — TELJES rekurzív LKL-mirror. A sysfs symlink-loop-jai miatt
         // (subsystem/driver/module/of_node) a recursivelyMirrorLklTree skipel.
         val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
-        sysMirror.deleteRecursively()
-        sysMirror.mkdirs()
-        val sysHit = recursivelyMirrorLklTree(
-            iface, "/sys", "/sys", sysMirror, maxDepth = 10,
-        )
-        Log.i(tag, "LKL /sys rekurzív mirror: $sysHit fájl")
+        val sysReady = File(sysMirror, ".kaliterm-mirror-ready")
+        val sysFresh = sysReady.exists() &&
+            (System.currentTimeMillis() - sysReady.lastModified()) < 10 * 60_000L
+        val sysHit = if (sysFresh) {
+            Log.i(tag, "LKL /sys cache HIT — skip populate")
+            sysMirror.list()?.size ?: 0
+        } else {
+            sysMirror.deleteRecursively()
+            sysMirror.mkdirs()
+            val hit = recursivelyMirrorLklTree(
+                iface, "/sys", "/sys", sysMirror, maxDepth = 6,
+            )
+            sysReady.writeText("ready ${System.currentTimeMillis()}\n")
+            Log.i(tag, "LKL /sys rekurzív mirror: $hit fájl")
+            hit
+        }
 
-        // /dev — TELJES rekurzív LKL-mirror. A char-device-okat üres-fájlként
-        // tükrözzük (a launch.sh felülírja a host /dev/{null,zero,urandom,…}-mal).
+        // /dev — TELJES rekurzív LKL-mirror. CACHE-elve mint /proc /sys.
         val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
-        devMirror.deleteRecursively()
-        devMirror.mkdirs()
-        val devHit = recursivelyMirrorLklTree(
-            iface, "/dev", "/dev", devMirror, maxDepth = 6,
-        )
-        Log.i(tag, "LKL /dev rekurzív mirror: $devHit entry")
+        val devReady = File(devMirror, ".kaliterm-mirror-ready")
+        val devFresh = devReady.exists() &&
+            (System.currentTimeMillis() - devReady.lastModified()) < 10 * 60_000L
+        val devHit = if (devFresh) {
+            Log.i(tag, "LKL /dev cache HIT — skip populate")
+            devMirror.list()?.size ?: 0
+        } else {
+            devMirror.deleteRecursively()
+            devMirror.mkdirs()
+            val hit = recursivelyMirrorLklTree(
+                iface, "/dev", "/dev", devMirror, maxDepth = 4,
+            )
+            devReady.writeText("ready ${System.currentTimeMillis()}\n")
+            Log.i(tag, "LKL /dev rekurzív mirror: $hit entry")
+            hit
+        }
 
         return osrelease
     }

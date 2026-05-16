@@ -170,12 +170,16 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
             })
             // KÉTLÉPCSŐS init:
             //   1) prepareLklMirror IO-szálon — bind-elés LklService-hez +
-            //      /proc-fájlok lekérése. Main-szálon deadlock-olna (a
-            //      Binder-callback maga is main-Looper-en fut).
+            //      LKL /proc /sys /dev rekurzív kiolvasás (max 30-40 sec
+            //      első alkalommal, utána cache-elve <10 perc TTL-lel).
+            //      Main-szálon deadlock-olna (a Binder-callback maga is
+            //      main-Looper-en fut).
             //   2) getOrCreateSession MAIN-szálon — a TerminalSession
             //      konstruktora `new Handler()`-t hív, ami Looper-t igényel;
             //      IO-szálon RuntimeException-t dob.
+            status = "LKL kernel mirror feltöltése (~30-40 sec első alkalommal)…"
             withContext(Dispatchers.IO) { b.prepareLklMirror(rootfs) }
+            status = "shell létrehozása…"
             session = b.getOrCreateSession(rootfs)
             status = "shell aktív (session=${session?.hashCode()?.toString(16)})"
             Log.i("kaliterm-shell", "session attached: $status")
