@@ -18,6 +18,17 @@ if [[ ! -f "${DL_DIR}/kalifs-arm64-minimal.tar.xz" ]]; then
   exit 1
 fi
 
+# Integritás-ellenőrzés a tarballon, mielőtt az APK assets/-ébe pakolnánk.
+# Egy csonka tar.xz az appban `EOFException`-nel halna el a kicsomagolásnál,
+# nehéz debug-olni a tényleges okot. Itt fail-fast.
+echo "[bundle] xz -t integritás-ellenőrzés a tarballon"
+if ! xz -t "${DL_DIR}/kalifs-arm64-minimal.tar.xz"; then
+  echo "[bundle] HIBA: ${DL_DIR}/kalifs-arm64-minimal.tar.xz csonka vagy sérült." >&2
+  echo "  Méret: $(stat -c%s "${DL_DIR}/kalifs-arm64-minimal.tar.xz") byte" >&2
+  echo "  Töröld és futtasd újra a build-kali-rootfs.sh-t." >&2
+  exit 2
+fi
+
 # Az APK assets/-be ezek a fájlok kerülnek (a kali-term-app workflow
 # kifolyatja a saját asset-mappájába):
 #   assets/rootfs/proot                       — bin
