@@ -874,6 +874,33 @@ static int start_urb_bridge(libusb_context *ctx, libusb_device_handle *h,
 
 /* ── JNI ─────────────────────────────────────────────────────────────── */
 
+/* nativeLklKernelRelease — a futó LKL kernel `/proc/sys/kernel/osrelease`-jét
+ * olvassa egy stringként. Üres stringgel tér vissza ha az LKL nem fut.
+ * A proot launch.sh ezzel az értékkel hívja `--kernel-release`-t, így a
+ * chrooted `uname -r` az LKL Linux-verzióját mutatja. */
+JNIEXPORT jstring JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklKernelRelease(JNIEnv *env, jobject thiz)
+{
+    char buf[128] = {0};
+    pthread_mutex_lock(&g_lkl.lock);
+    lkl_resolve_locked();
+    if (g_lkl.running && g_lkl.syscall_fn) {
+        size_t len = 0;
+        long rc = lkl_read_file("/proc/sys/kernel/osrelease", buf, sizeof(buf) - 1, &len);
+        if (rc < 0 || len == 0) {
+            buf[0] = '\0';
+        } else {
+            buf[len] = '\0';
+            /* trailing \n trimming */
+            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) {
+                buf[--len] = '\0';
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_lkl.lock);
+    return (*env)->NewStringUTF(env, buf);
+}
+
 JNIEXPORT jstring JNICALL
 Java_dev_hm_kaliterm_NativeBridge_nativeLklStatus(JNIEnv *env, jobject thiz)
 {

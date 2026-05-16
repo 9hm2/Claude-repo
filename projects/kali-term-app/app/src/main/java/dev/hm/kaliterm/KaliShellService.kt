@@ -52,15 +52,25 @@ class KaliShellService : Service() {
             session?.let { return it }
             // PROOT az APK nativeLibraryDir-ből (libproot.so), NEM a filesDir-ből.
             // Lásd RootfsManager.nativeProot — Android W^X policy miatt.
-            // A proot az upstream proot-me v5.4.0 saját NDK-build-je;
-            // statikusan linkelt libtalloc-kal és inline (xxd-beágyazott)
-            // tracee-loader-rel. Tehát NEM kell PROOT_LOADER vagy
-            // LD_LIBRARY_PATH env — csak a chroot-paraméterek.
+            // A proot a Termux fork NDK-build-je; tartalmazza a `--link2symlink`,
+            // `--kernel-release`, `-0` (root-id) Android-szpecifikus patcheket.
+            //
+            // LKL_KERNEL_RELEASE — ha az LKL kernel fut, az ő `osrelease`-jét
+            // (pl. "5.18.0") használjuk; egyébként fallback "6.1.0-kali".
+            // A launch.sh ezt adja át `--kernel-release` arg-szal a proot-nak,
+            // így a chrooted `uname -r` az LKL-szerű kernel-verziót mutatja.
+            val lklRelease = runCatching { NativeBridge.nativeLklKernelRelease() }
+                .getOrDefault("")
+                .takeIf { it.isNotBlank() }
+                ?: "6.1.0-kali"
+            Log.i(tag, "LKL_KERNEL_RELEASE = $lklRelease")
+
             val env = arrayOf(
                 "HOME=${rootfs.bundleDir.absolutePath}",
                 "PREFIX=${rootfs.bundleDir.absolutePath}",
                 "ROOTFS_DIR=${rootfs.rootfsDir.absolutePath}",
                 "PROOT=${rootfs.nativeProot.absolutePath}",
+                "LKL_KERNEL_RELEASE=$lklRelease",
                 // PROOT_TMP_DIR + TMPDIR — proot kötelezően kér egy writable
                 // temp-mappát a mountpoint-emulation cache-jéhez. Android-on
                 // nincs /tmp, ezért a filesDir alá tesszük (writable+exec).

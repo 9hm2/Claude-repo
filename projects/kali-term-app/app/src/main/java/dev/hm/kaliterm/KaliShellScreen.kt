@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.Button
@@ -173,12 +174,16 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
         }
     }
 
-    // A windowSoftInputMode="adjustResize" (Manifest) + Scaffold-innerPadding
-    // (MainActivity) MÁR kezeli az IME-paddinget; egy plusz .imePadding() itt
-    // duplán applikálódna és üres sávot adna a billentyűzet fölött.
+    // Insets-kezelés: a MainActivity Scaffold-jából NEM kapunk innerPaddinget
+    // (azt a KaliShell-Box explicit elhagyja), így itt kell mindent kezelnünk:
+    //   .systemBarsPadding() — status/nav-bar
+    //   .imePadding()        — soft-keyboard (billentyűzet fölött legyen a
+    //                          terminál + extra-keys row, ne mögötte)
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .systemBarsPadding()
+            .imePadding()
             .padding(8.dp),
     ) {
         Row(

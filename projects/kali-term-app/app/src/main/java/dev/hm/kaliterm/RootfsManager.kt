@@ -203,7 +203,7 @@ exec "${'$'}PROOT" \
     --kill-on-exit \
     --link2symlink \
     -0 \
-    --kernel-release=6.1.0-kali \
+    --kernel-release="${'$'}{LKL_KERNEL_RELEASE:-6.1.0-kali}" \
     -r "${'$'}ROOTFS_DIR" \
     -w "${'$'}USER_HOME" \
     -b /dev \

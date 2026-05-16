@@ -77,6 +77,15 @@ object NativeBridge {
     external fun nativeLklStatus(): String
 
     /**
+     * Phase 2c.5d — a futó LKL kernel `/proc/sys/kernel/osrelease`-jét adja
+     * vissza (pl. "5.18.0"). Üres string ha az LKL nem fut. A proot
+     * launch.sh-t ezzel az értékkel hívjuk `--kernel-release` arg-szal,
+     * hogy a chrooted `uname -r` az LKL-szerű verziót mutassa, NE az
+     * Android-host kernel verzióját.
+     */
+    external fun nativeLklKernelRelease(): String
+
+    /**
      * `lkl_start_kernel(lkl_host_ops, "mem=64M loglevel=8")` meghívása.
      * Visszaadás: 0 = ok, `-ENOENT` = nincs LKL .so, `-EALREADY` = már fut.
      */

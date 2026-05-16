@@ -54,8 +54,13 @@ class MainActivity : ComponentActivity() {
                     // vissza a Home-ra; Home-on hagyjuk a default Activity-exitet.
                     BackHandler(enabled = screen != "home") { screen = "home" }
                     when (screen) {
+                        // A KaliShell saját imePadding-et kezel — a TerminalView
+                        // weight=1-gyel telik, az ExtraKeys row alul a billentyűzet
+                        // FÖLÖTT marad. A Scaffold-innerPadding csak status/nav-bar
+                        // adatot tartalmaz; az IME-padding-et NEM applikáljuk itt,
+                        // mert akkor duplán adódna össze és üres sáv jönne.
                         "shell" -> androidx.compose.foundation.layout.Box(
-                            modifier = Modifier.fillMaxSize().padding(innerPadding)
+                            modifier = Modifier.fillMaxSize()
                         ) {
                             KaliShellScreen(onBack = { screen = "home" })
                         }

@@ -8,6 +8,12 @@
     -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
+    <!-- A chrooted Kali bash hálózatot az Android-kernel-szocketstack-en
+         keresztül használja (proot ptrace-transparent); ehhez kell a netezés-
+         permission. NÉLKÜLE apt update / curl / ping / DNS-lookup mind fail. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:name=".KaliApplication"
         android:allowBackup="false"
