@@ -397,7 +397,11 @@ class KaliShellService : Service() {
             hit
         }
 
-        // /dev — TELJES rekurzív LKL-mirror. CACHE-elve mint /proc /sys.
+        // /dev — top-szintű listing, NEM rekurzív. A /dev/pts-on belül az
+        // LKL devpts dinamikusan kreál pty-ket → infinite getdents-loop +
+        // több perces Binder-call-hang. Helyette csak az első szintet
+        // listázzuk; a launch.sh host-bindokkal felülír mindent ami kell
+        // (null/zero/urandom/tty/ptmx/pts/...).
         val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
         val devReady = File(devMirror, ".kaliterm-mirror-ready")
         val devFresh = devReady.exists() &&
@@ -408,13 +412,24 @@ class KaliShellService : Service() {
         } else {
             devMirror.deleteRecursively()
             devMirror.mkdirs()
-            val hit = recursivelyMirrorLklTree(
-                iface, "/dev", "/dev", devMirror, maxDepth = 4,
-            )
+            // MAX_DEPTH=1: csak a /dev közvetlen entry-jeit, NEM recurse-elve
+            val devList = runCatching { iface.listLklDir("/dev") }.getOrDefault("")
+            var hit = 0
+            devList.lines().filter { it.isNotBlank() }.take(50).forEach { name ->
+                val entry = name.trim()
+                if (entry !in DEFAULT_SKIP_NAMES && entry.isNotBlank()) {
+                    val out = File(devMirror, entry)
+                    if (out.path.startsWith(devMirror.path)) {
+                        runCatching { out.writeText("") }
+                        hit++
+                    }
+                }
+            }
             devReady.writeText("ready ${System.currentTimeMillis()}\n")
-            Log.i(tag, "LKL /dev rekurzív mirror: $hit entry")
+            Log.i(tag, "LKL /dev top-listing: $hit entry")
             hit
         }
+        Log.i(tag, "populateLklProcMirror DONE — return osrelease=$osrelease")
 
         return osrelease
     }
