@@ -45,9 +45,12 @@ if [[ ! -f "${KEYRING_FILE}" ]]; then
   curl -fsSL --retry 4 --retry-delay 2 \
     -o "${DL_DIR}/kali-archive-key.asc" \
     https://archive.kali.org/archive-key.asc
+  # `gpg --dearmor` raw-OpenPGP-packet stream-et ad — EZT VÁRJA a debootstrap
+  # `--keyring`-je ÉS a modern apt `sqv` verifikátora `/etc/apt/trusted.gpg.d/`-ben.
+  # A korábbi `gpg --import` GPG-native keybox-formátumot adott, amit az új
+  # apt 'unsupported filetype'-tal elutasít.
   echo "[kali] dearmor → binary keyring"
-  gpg --no-default-keyring --keyring="${KEYRING_FILE}" \
-      --import "${DL_DIR}/kali-archive-key.asc"
+  gpg --dearmor < "${DL_DIR}/kali-archive-key.asc" > "${KEYRING_FILE}"
   ls -lh "${KEYRING_FILE}"
 fi
 
