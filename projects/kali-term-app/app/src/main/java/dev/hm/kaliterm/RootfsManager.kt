@@ -179,11 +179,32 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Indítás — bash -l a Kali rootfs-ben
-echo "─── proot indítása → /bin/bash ───"
-exec "${'$'}PROOT" \
-    --link2symlink \
-    --kill-on-exit \
+# 4) Proot indítási diagnosztika — lépésenként, hogy ha 255-tel hal el,
+#    pontosan lássuk MELYIK flag/argumentum okozza. A `exec`-et NEM
+#    használjuk amíg nem tudjuk hogy minden lépés OK; így ha a proot
+#    elhal stderr-output nélkül, legalább a parent-shell-ből látjuk a $?-t.
+echo "─── [1] proot -r ROOTFS /bin/ls (minimal chroot, stderr→stdout) ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/ls / 2>&1 | head -10
+echo "[1] rc=${'$'}?"
+echo
+
+echo "─── [2] proot -0 -r ROOTFS id ───"
+"${'$'}PROOT" -0 -r "${'$'}ROOTFS_DIR" /usr/bin/id 2>&1
+echo "[2] rc=${'$'}?"
+echo
+
+echo "─── [3] proot -0 -r ROOTFS -b /dev -b /proc -b /sys /bin/echo OK ───"
+"${'$'}PROOT" -0 -r "${'$'}ROOTFS_DIR" -b /dev -b /proc -b /sys /bin/echo "chroot-echo-OK" 2>&1
+echo "[3] rc=${'$'}?"
+echo
+
+echo "─── [4] proot + --link2symlink (Termux-flag teszt) ───"
+"${'$'}PROOT" --link2symlink -0 -r "${'$'}ROOTFS_DIR" /bin/echo "link2symlink-OK" 2>&1
+echo "[4] rc=${'$'}?"
+echo
+
+echo "─── [5] full kiindulás: proot + bash -l ───"
+"${'$'}PROOT" \
     -0 \
     -r "${'$'}ROOTFS_DIR" \
     -b /dev \
@@ -195,10 +216,12 @@ exec "${'$'}PROOT" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         TERM="${'$'}{TERM:-xterm-256color}" \
         LANG=C.UTF-8 \
-        /bin/bash -l
-
-# Ide csak akkor jutunk, ha az exec proot SIKERTELEN volt.
-echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
+        /bin/bash -l 2>&1
+RC=${'$'}?
+echo
+echo "[5] rc=${'$'}RC"
+echo
+echo "── proot exit; Android sh drop a vizsgálathoz ──"
 exec /system/bin/sh
 """
 
