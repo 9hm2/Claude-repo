@@ -354,96 +354,40 @@ class KaliShellService : Service() {
             return null
         }
 
-        // /proc — TELJES rekurzív LKL-mirror. A whitelist-megközelítés helyett
-        // a teljes /proc-fa minden file-ját és sub-directory-jét átemeljük.
-        // Skipelendők: /proc/self (host-overlay-jel kezelve), /proc/<PID>/fd
-        // (recursion-veszély), kvázi-link entries.
-        //
-        // CACHE: ha a mirror <10 perce frissült, skipeljük. A user UI-élmény
-        // szempontjából a 40+ sec-os bind sokszori ismétlése elfogadhatatlan;
-        // a kernel-state minimum változik 10 perces ablakban.
+        // /proc — MINIMAL mirror. A shim minden /proc-open()-t a control-
+        // socketen át LKL-be route-ol; a host-mirror már csak az `osrelease`
+        // értékre + /proc/mounts standardizálásra kell (utóbbi a libusb-
+        // sysfs-check-jéhez). A korábbi 280+ fájlos rekurzív walk SHIM nélkül
+        // volt indokolt; mostantól a shim-megoldás váltja.
         val procMirror = File(rootfs.prootTmpDir, "lkl-proc")
-        val procReady = File(procMirror, ".kaliterm-mirror-ready")
-        val procFresh = procReady.exists() &&
-            (System.currentTimeMillis() - procReady.lastModified()) < 0L
-        val procHit = if (procFresh) {
-            Log.i(tag, "LKL /proc cache HIT — skip populate")
-            procMirror.list()?.size ?: 0
-        } else {
-            procMirror.deleteRecursively()
-            procMirror.mkdirs()
-            val hit = recursivelyMirrorLklTree(
-                iface, "/proc", "/proc", procMirror, maxDepth = 5,
-                skipNames = setOf("self", "thread-self",
-                                  "cwd", "exe", "root", "fd", "fdinfo", "task"),
-            )
-            procReady.writeText("ready ${System.currentTimeMillis()}\n")
-            Log.i(tag, "LKL /proc rekurzív mirror: $hit fájl, osrelease=$osrelease")
-            hit
-        }
+        procMirror.deleteRecursively()
+        procMirror.mkdirs()
+        File(procMirror, "sys/kernel").mkdirs()
+        File(procMirror, "sys/kernel/osrelease").writeText("$osrelease\n")
+        val procHit = 1
 
-        // /sys — TELJES rekurzív LKL-mirror. A sysfs symlink-loop-jai miatt
-        // (subsystem/driver/module/of_node) a recursivelyMirrorLklTree skipel.
+        // /sys — MINIMAL skeleton. A shim minden /sys-open()-t LKL-be route-ol.
         val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
-        val sysReady = File(sysMirror, ".kaliterm-mirror-ready")
-        val sysFresh = sysReady.exists() &&
-            (System.currentTimeMillis() - sysReady.lastModified()) < 0L
-        val sysHit = if (sysFresh) {
-            Log.i(tag, "LKL /sys cache HIT — skip populate")
-            sysMirror.list()?.size ?: 0
-        } else {
-            sysMirror.deleteRecursively()
-            sysMirror.mkdirs()
-            val hit = recursivelyMirrorLklTree(
-                iface, "/sys", "/sys", sysMirror, maxDepth = 6,
-            )
-            sysReady.writeText("ready ${System.currentTimeMillis()}\n")
-            Log.i(tag, "LKL /sys rekurzív mirror: $hit fájl")
-            hit
+        sysMirror.deleteRecursively()
+        sysMirror.mkdirs()
+        listOf("bus", "class", "dev", "devices", "firmware", "fs",
+               "kernel", "module", "power", "block").forEach {
+            File(sysMirror, it).mkdirs()
         }
+        val sysHit = 10
 
-        // /dev — top-szintű listing, NEM rekurzív. A /dev/pts-on belül az
-        // LKL devpts dinamikusan kreál pty-ket → infinite getdents-loop +
-        // több perces Binder-call-hang. Helyette csak az első szintet
-        // listázzuk; a launch.sh host-bindokkal felülír mindent ami kell
-        // (null/zero/urandom/tty/ptmx/pts/...).
+        // /dev — MINIMAL skeleton. A shim a /dev/bus-prefixű hívásokat
+        // LKL-be route-eli, de mivel az LKL devtmpfs-en nincs /dev/bus/usb
+        // udev-fa (azt userspace udev kreálná), a placeholder-megközelítés
+        // marad: /dev/bus/usb/<bus>/<dev> üres-fájl-fa a host-on, és a launch.sh
+        // bind-mountolja a host-/dev/{null,zero,urandom,tty,ptmx,pts,fd,…}-t.
         val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
-        val devReady = File(devMirror, ".kaliterm-mirror-ready")
-        val devFresh = devReady.exists() &&
-            (System.currentTimeMillis() - devReady.lastModified()) < 0L
-        val devHit = if (devFresh) {
-            Log.i(tag, "LKL /dev cache HIT — skip populate")
-            devMirror.list()?.size ?: 0
-        } else {
-            devMirror.deleteRecursively()
-            devMirror.mkdirs()
-            // MAX_DEPTH=1: csak a /dev közvetlen entry-jeit, NEM recurse-elve
-            val devList = runCatching { iface.listLklDir("/dev") }.getOrDefault("")
-            var hit = 0
-            devList.lines().filter { it.isNotBlank() }.take(50).forEach { name ->
-                val entry = name.trim()
-                if (entry !in DEFAULT_SKIP_NAMES && entry.isNotBlank()) {
-                    val out = File(devMirror, entry)
-                    if (out.path.startsWith(devMirror.path)) {
-                        runCatching { out.writeText("") }
-                        hit++
-                    }
-                }
-            }
-            devReady.writeText("ready ${System.currentTimeMillis()}\n")
-            Log.i(tag, "LKL /dev top-listing: $hit entry")
-            hit
+        devMirror.deleteRecursively()
+        devMirror.mkdirs()
+        for (dn in listOf("bus", "bus/usb", "pts", "shm", "input", "snd", "dri", "net")) {
+            File(devMirror, dn).mkdirs()
         }
-
-        // KNOWN-DIRECTORY entry-k: az LKL /dev-en `bus`, `pts`, `shm`, …
-        // mappák. A flat top-listing fájl-ként írná őket; itt KÉNYSZERÍTJÜK
-        // hogy mappák legyenek, hogy a `/dev/bus/usb/<bus>/<dev>` placeholder
-        // alá tudjunk fésülni mappa-szerkezetet.
-        for (dn in listOf("bus", "pts", "shm", "input", "snd", "dri", "net")) {
-            val f = File(devMirror, dn)
-            if (f.exists() && !f.isDirectory) f.delete()
-            f.mkdirs()
-        }
+        val devHit = 8
 
         // /dev/bus/usb/<busnum>/<devnum> placeholder-fa — a libusb és lsusb
         // ezt enumerálja (USBDEVFS-szabvány). Az LKL devtmpfs nem populálja,
