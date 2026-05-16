@@ -179,34 +179,41 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Proot accelerator-toggle diagnosztika.
+# 4) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
 #
-# Az előző diag mutatta: a chrooted ELF-ek 255-szel halnak el (echo/sh/bash),
-# az ls látszólag rc=0 (de head-cal pipe-olva). Az upstream proot beépített
-# `process_vm = yes, seccomp_filter = yes` accelerator-t használ; lehet
-# ezekkel inkompatibilitás a host-kerneliel. Toggle-vel deríthetjük.
+# A binárisunk most a TERMUX FORK (build-proot.sh-szal letöltve a
+# termux/proot master-ből, NDK-szal statikusan build-elt libtalloc-cal
+# és inline tracee-loader-rel). Tartalmazza az Android-szpecifikus
+# kernel-hook patcheket — különben a SECCOMP_MODE_FILTER az upstream
+# proot tracee-jét SIGSYS-szel (signal 31) megöli.
+echo "─── proot indítása → /bin/bash ───"
+exec "${'$'}PROOT" \
+    --kill-on-exit \
+    --link2symlink \
+    -0 \
+    --kernel-release=5.4.0-fake-kernel \
+    -r "${'$'}ROOTFS_DIR" \
+    -w "${'$'}USER_HOME" \
+    -b /dev \
+    -b /proc \
+    -b /sys \
+    -b /proc/self/fd/0:/dev/stdin \
+    -b /proc/self/fd/1:/dev/stdout \
+    -b /proc/self/fd/2:/dev/stderr \
+    -b /proc/self/fd:/dev/fd \
+    -b /dev/urandom:/dev/random \
+    -b /dev/null:/proc/sys/kernel/cap_last_cap \
+    /usr/bin/env -i \
+        HOME="${'$'}USER_HOME" \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        TERM="${'$'}{TERM:-xterm-256color}" \
+        TMPDIR=/tmp \
+        LANG=C.UTF-8 \
+        /bin/bash --login
 
-echo "─── [P1] proot -r ROOTFS /bin/echo (default acceleratorok) ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/echo HELLO-DEFAULT 2>&1
-echo "[P1] rc=${'$'}?"
-echo
-
-echo "─── [P2] PROOT_NO_SECCOMP=1 (seccomp-filter off) ───"
-PROOT_NO_SECCOMP=1 "${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/echo HELLO-NO-SECCOMP 2>&1
-echo "[P2] rc=${'$'}?"
-echo
-
-echo "─── [P3] --verbose proot ───"
-"${'$'}PROOT" --verbose=2 -r "${'$'}ROOTFS_DIR" /bin/echo HELLO-VERBOSE 2>&1 | head -60
-echo "[P3] rc=${'$'}{PIPESTATUS[0]}"
-echo
-
-echo "─── [P4] proot stat-stat /bin/echo ───"
-stat "${'$'}ROOTFS_DIR/bin/echo" 2>&1
-stat "${'$'}ROOTFS_DIR/usr/bin/echo" 2>&1
-echo
-
-echo "── Diag vége; Android sh drop ──"
+# Ide csak akkor jutunk, ha az exec proot SIKERTELEN volt.
+echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
+echo "Drop to Android sh."
 exec /system/bin/sh
 """
 

@@ -62,12 +62,18 @@ if [[ ! -x "${CC}" ]]; then
 fi
 
 # ─── 1) Tarball download ──────────────────────────────────────────────────
-PROOT_TARBALL="${DL_DIR}/proot-${PROOT_VERSION}.tar.gz"
+# A TERMUX FORK-jából buildelünk, NEM az upstream proot-me-ből — utóbbi
+# Android-kernel seccomp-filterén SIGSYS-szel (signal 31) ölte a chrooted
+# processeket (a kernel a ptrace-syscallt blokkolja, az upstream nem tudja
+# kerülni). A Termux fork tartalmazza az ehhez szükséges kernel-hook
+# patcheket (`syscall/seccomp.c`-ben SECCOMP_MODE_FILTER fallback +
+# Android-kompat).
+PROOT_TARBALL="${DL_DIR}/proot-termux-master.tar.gz"
 TALLOC_TARBALL="${DL_DIR}/talloc-${TALLOC_VERSION}.tar.gz"
 
 if [[ ! -f "${PROOT_TARBALL}" ]]; then
-  PROOT_URL="https://github.com/proot-me/proot/archive/refs/tags/v${PROOT_VERSION}.tar.gz"
-  echo "[build-proot] download proot src: ${PROOT_URL}"
+  PROOT_URL="https://github.com/termux/proot/archive/refs/heads/master.tar.gz"
+  echo "[build-proot] download Termux proot fork: ${PROOT_URL}"
   curl -fL --retry 4 --retry-delay 2 -o "${PROOT_TARBALL}" "${PROOT_URL}"
 fi
 if [[ ! -f "${TALLOC_TARBALL}" ]]; then
@@ -290,6 +296,9 @@ EOF
 sed -i.bak '/^OBJECTS += \\$/i OBJECTS += extension/python/python_stub.o' "${PROOT_MAKEFILE}"
 
 echo "[build-proot] make -C ${PROOT_SRC} (NDK cross-compile)"
+# A Termux fork néhány extension-ja (ashmem_memfd, fake_id0) missing-include-okat
+# tartalmaz amik NDK clang 18+ strict-mode-on (-Werror=implicit-function-declaration)
+# ERROR-rel halnak el. Lekapcsoljuk warningra.
 make -C "${PROOT_SRC}" -j"$(nproc)" \
     CC="${CC}" \
     LD="${LD}" \
@@ -298,7 +307,7 @@ make -C "${PROOT_SRC}" -j"$(nproc)" \
     OBJDUMP="${OBJDUMP}" \
     STRIP="${NDK_BIN}/llvm-strip" \
     HOST_CC="cc" \
-    CFLAGS="-O2 ${TALLOC_INCLUDE_FLAG} -DGIT_VERSION=\"v${PROOT_VERSION}\"" \
+    CFLAGS="-O2 ${TALLOC_INCLUDE_FLAG} -DGIT_VERSION=\"v${PROOT_VERSION}\" -Wno-error=implicit-function-declaration -Wno-error=incompatible-function-pointer-types -Wno-error=int-conversion" \
     LDFLAGS="-L${TALLOC_OUT} -ltalloc -static-libgcc" \
     proot
 
