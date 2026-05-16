@@ -218,12 +218,15 @@ jobs:
           name: lkl-android-arm64
           path: /tmp/lkl-android-arm64
 
-      # `workflow_conclusion: ""` (üres) — bármilyen konklúziójú PREVIOUS
-      # workflow-run-ból elfogadjuk az artifact-ot. A default ("success") túl
-      # szigorú: ha az APK build hibázott egy korábbi run-ban, az LKL job
-      # ATTÓL MÉG sikeres volt és van artifact-ja, de a workflow OVERALL
-      # konklúziója "failure" → nem találnánk semmit. Most az utolsó run-ot
-      # vesszük (függetlenül a workflow-conclusion-tól).
+      # KRITIKUS — `search_artifacts: true` + `workflow_conclusion: ""`:
+      # A `dawidd6/action-download-artifact@v6` alapból a legutóbbi run-t
+      # nézi a megadott branchen → de az pont a JELENLEGI run, amiben az
+      # LKL/rootfs job skip-pelt, tehát nincs artifact. "no artifacts found"
+      # hiba. A `search_artifacts: true` iterál vissza a korábbi run-okra
+      # amíg talál egy ami feltöltötte a nevezett artifactot. A
+      # `workflow_conclusion: ""` pedig bármilyen konklúciójú run-t elfogad
+      # (default "success" — de az APK eddig minden run-ban hibázott,
+      # így "success" overall conclusion sosem volt).
       - name: Download LKL artifact (legutóbbi run)
         if: needs.lkl-android.result == 'skipped'
         uses: dawidd6/action-download-artifact@v6
@@ -233,6 +236,7 @@ jobs:
           workflow: kali-term-release.yml
           workflow_conclusion: ""
           branch: ${{ github.ref_name }}
+          search_artifacts: true
           if_no_artifact_found: fail
 
       # Kali rootfs bundle: ugyanaz a feltételes letöltés.
@@ -252,6 +256,7 @@ jobs:
           workflow: kali-term-release.yml
           workflow_conclusion: ""
           branch: ${{ github.ref_name }}
+          search_artifacts: true
           if_no_artifact_found: fail
 
       - name: Place LKL .so → jniLibs, tool ELF-ek → assets,
