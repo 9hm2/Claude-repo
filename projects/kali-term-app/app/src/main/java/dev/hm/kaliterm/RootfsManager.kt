@@ -91,10 +91,12 @@ class RootfsManager(private val ctx: Context) {
 
             if (readyMarker.exists()) {
                 Log.i(tag, "rootfs already extracted")
-                // resolv.conf + keyring frissítése akkor is, ha a fa már ki van
-                // bontva — különben a régi (üres/hiányos) verzió marad.
+                // resolv.conf + keyring + shim frissítése akkor is, ha a fa
+                // már ki van bontva — különben a régi (üres/hiányos) verzió
+                // marad, és új APK-build-szel a shim nem frissül.
                 writeResolvConf()
                 writeKaliKeyring()
+                writeFuseShim()
                 return null
             }
 
@@ -126,6 +128,11 @@ class RootfsManager(private val ctx: Context) {
             // de a chmod/symlink-ek után gyakran elveszik. Az APK assets-ben
             // shippelt másolatot mindig át-pakoljuk.
             writeKaliKeyring()
+
+            // FUSE-shim: LD_PRELOAD libc-override a chrooted bash-ban —
+            // a /proc, /sys, /dev/bus path-okra hívott libc-funkcók a
+            // `:lkl` control-socketen át LKL-syscallt route-olnak.
+            writeFuseShim()
 
             progressCb?.invoke("kész")
             return null
@@ -306,6 +313,7 @@ set -- "${'$'}@" \
         TMPDIR=/tmp \
         LANG=C.UTF-8 \
         LIBUSB_DISABLE_UDEV=1 \
+        LD_PRELOAD=/usr/lib/libkali_fuse_shim.so \
         /bin/bash --login
 exec "${'$'}@"
 
@@ -314,6 +322,22 @@ echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
 echo "Drop to Android sh."
 exec /system/bin/sh
 """
+
+    /** libkali_fuse_shim.so beágyazása a chrooted /usr/lib-be, LD_PRELOAD-ra
+     *  készen. Az APK assets/rootfs/libkali_fuse_shim.so-jét másoljuk. */
+    private fun writeFuseShim() {
+        try {
+            val target = File(rootfsDir, "usr/lib/libkali_fuse_shim.so")
+            target.parentFile?.mkdirs()
+            ctx.assets.open("rootfs/libkali_fuse_shim.so").use { input ->
+                FileOutputStream(target).use { input.copyTo(it) }
+            }
+            Os.chmod(target.absolutePath, "755".toInt(8))
+            Log.i(tag, "FUSE shim kiírva: ${target.absolutePath} (${target.length()}B)")
+        } catch (t: Throwable) {
+            Log.w(tag, "writeFuseShim failed: ${t.message}")
+        }
+    }
 
     /** Kali archive GPG keyring beágyazása a chrooted /etc/apt/trusted.gpg.d/-be.
      *  Az APK assets/rootfs/kali-archive-keyring.gpg-jét másoljuk. Idempotens. */
