@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
@@ -77,6 +78,8 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
     var ctrlMod by remember { mutableStateOf(false) }
     var binder by remember { mutableStateOf<KaliShellService.LocalBinder?>(null) }
+    // Pinch-zoom font-size state (Termux-mintára: 6..40 sp tartomány).
+    var fontSize by remember { mutableStateOf(20) }
 
     // Soft-keyboard megjelenítő. Termux flow: setFocusable + requestFocus +
     // showSoftInput. A TerminalView magától NEM kéri az IME-t (nem EditText).
@@ -170,7 +173,15 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+    // imePadding(): a Composable a soft-keyboard fölött legyen, ne takarja.
+    // Plusz a Manifest-ben `windowSoftInputMode="adjustResize"` — együtt ad
+    // Termux-szerű élményt (terminál + extra-keys-row mindig látható).
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .padding(8.dp),
+    ) {
         Row(
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -206,8 +217,23 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
                         // setTextSize() inicializálja a renderert — KÖTELEZŐ
                         // hogy attachSession előtt fusson, különben NPE az
                         // onSizeChanged-ben.
-                        setTextSize(36)
-                        setTerminalViewClient(makeViewClient(::showKeyboard))
+                        setTextSize(fontSize)
+                        // A TerminalViewClient.onScale-ben kapjuk a pinch-gesture
+                        // akumulált skálázását. Mi a `fontSize` state-re mappoljuk,
+                        // és setTextSize-szal alkalmazzuk a TerminalView-on.
+                        setTerminalViewClient(makeViewClient(
+                            showKeyboard = ::showKeyboard,
+                            onPinchZoom = { acc ->
+                                if (acc < 0.9f || acc > 1.1f) {
+                                    val newSize = (fontSize * acc).toInt().coerceIn(8, 64)
+                                    if (newSize != fontSize) {
+                                        fontSize = newSize
+                                        terminalView?.setTextSize(newSize)
+                                    }
+                                    1.0f  // reset accumulator
+                                } else acc  // tovább-gyűjt
+                            },
+                        ))
                         // attachSession() bind-eli a session-t — utána az
                         // első onSizeChanged forkolja a shellt.
                         attachSession(s)
@@ -319,9 +345,12 @@ private fun ExtraKey(
  *
  * Az egyetlen kritikus override: `onSingleTapUp` → soft-keyboard popup.
  */
-private fun makeViewClient(showKeyboard: () -> Unit) = object : TerminalViewClient {
+private fun makeViewClient(
+    showKeyboard: () -> Unit,
+    onPinchZoom: (Float) -> Float = { it },
+) = object : TerminalViewClient {
     private val tag = "kaliterm-view"
-    override fun onScale(scale: Float): Float = scale
+    override fun onScale(scale: Float): Float = onPinchZoom(scale)
     override fun onSingleTapUp(e: android.view.MotionEvent?) {
         showKeyboard()
     }
