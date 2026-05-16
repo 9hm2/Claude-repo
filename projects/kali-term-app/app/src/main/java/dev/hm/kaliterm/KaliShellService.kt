@@ -360,7 +360,7 @@ class KaliShellService : Service() {
         val procMirror = File(rootfs.prootTmpDir, "lkl-proc")
         val procReady = File(procMirror, ".kaliterm-mirror-ready")
         val procFresh = procReady.exists() &&
-            (System.currentTimeMillis() - procReady.lastModified()) < 60_000L
+            (System.currentTimeMillis() - procReady.lastModified()) < 0L
         val procHit = if (procFresh) {
             Log.i(tag, "LKL /proc cache HIT — skip populate")
             procMirror.list()?.size ?: 0
@@ -382,7 +382,7 @@ class KaliShellService : Service() {
         val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
         val sysReady = File(sysMirror, ".kaliterm-mirror-ready")
         val sysFresh = sysReady.exists() &&
-            (System.currentTimeMillis() - sysReady.lastModified()) < 60_000L
+            (System.currentTimeMillis() - sysReady.lastModified()) < 0L
         val sysHit = if (sysFresh) {
             Log.i(tag, "LKL /sys cache HIT — skip populate")
             sysMirror.list()?.size ?: 0
@@ -405,7 +405,7 @@ class KaliShellService : Service() {
         val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
         val devReady = File(devMirror, ".kaliterm-mirror-ready")
         val devFresh = devReady.exists() &&
-            (System.currentTimeMillis() - devReady.lastModified()) < 60_000L
+            (System.currentTimeMillis() - devReady.lastModified()) < 0L
         val devHit = if (devFresh) {
             Log.i(tag, "LKL /dev cache HIT — skip populate")
             devMirror.list()?.size ?: 0
