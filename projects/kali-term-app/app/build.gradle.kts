@@ -87,6 +87,14 @@ android {
         }
     }
 
+    // Assets/raw: ne re-compressel-je az AGP az amúgy is tömörített
+    // formátumokat. KRITIKUS a kalifs-arm64-minimal.tar.xz-re: a default
+    // deflate az XZ tartalmat csonkítja, a Kotlin oldali XZInputStream
+    // pedig "EOFException null"-lel elhal kicsomagoláskor.
+    androidResources {
+        noCompress += listOf("xz", "tar.xz")
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

@@ -197,10 +197,26 @@ exec /system/bin/sh
 """
 
     private fun copyAsset(assetPath: String, dst: File) {
+        // ctx.assets.openFd() méretet ad ha az asset uncompressed-en van az
+        // APK-ban (noCompress lista). Compressed asset-eknél a length=-1
+        // jön, akkor csak best-effort másolunk.
+        val expectedSize: Long = try {
+            ctx.assets.openFd(assetPath).use { it.length }
+        } catch (_: Throwable) { -1L }
+
         ctx.assets.open(assetPath).use { input ->
             FileOutputStream(dst).use { output ->
                 input.copyTo(output)
             }
+        }
+
+        val actualSize = dst.length()
+        Log.i(tag, "copyAsset $assetPath: expected=$expectedSize, actual=$actualSize")
+        if (expectedSize > 0 && actualSize != expectedSize) {
+            throw java.io.IOException(
+                "copyAsset csonka: $assetPath — várt $expectedSize byte, " +
+                "ténylegesen $actualSize. AGP noCompress beállítás hiányzik?"
+            )
         }
     }
 
@@ -222,29 +238,43 @@ exec /system/bin/sh
      * tartalmaz (pl. /usr/sbin → /usr/bin); enélkül a /bin/bash sem indul.
      */
     private fun extractTarXz(tarball: File, dst: File, progressCb: ((String) -> Unit)?) {
-        progressCb?.invoke("xz dekódolás + tar extrakció (pure-Java)…")
         val total = tarball.length()
-        var lastProgressBytes = 0L
+        progressCb?.invoke("xz dekódolás + tar extrakció (${total / 1024}KB)…")
+        if (total < 1024) {
+            throw java.io.IOException(
+                "tar.xz gyanúsan kicsi (${total} byte). copyAsset hibás? " +
+                "AGP noCompress beállítás hiányzik?"
+            )
+        }
         var entries = 0
 
-        FileInputStream(tarball).use { fis ->
-            BufferedInputStream(fis).use { bis ->
-                XZInputStream(bis).use { xz ->
-                    TarArchiveInputStream(xz).use { tar ->
-                        while (true) {
-                            val entry = tar.nextEntry ?: break
-                            extractEntry(entry, tar, dst)
-                            entries++
-                            // Progress beolvasott byte-okból (XZ-tömörítettből).
-                            // Az XZInputStream nem ad progress-API-t, ezért
-                            // hozzávetőlegesen az `entries` alapján mutatjuk.
-                            if (entries % 500 == 0) {
-                                progressCb?.invoke("kicsomagolás: $entries fájl…")
+        try {
+            FileInputStream(tarball).use { fis ->
+                BufferedInputStream(fis).use { bis ->
+                    XZInputStream(bis).use { xz ->
+                        TarArchiveInputStream(xz).use { tar ->
+                            while (true) {
+                                val entry = tar.nextEntry ?: break
+                                extractEntry(entry, tar, dst)
+                                entries++
+                                if (entries % 500 == 0) {
+                                    progressCb?.invoke("kicsomagolás: $entries fájl…")
+                                }
                             }
                         }
                     }
                 }
             }
+        } catch (e: java.io.EOFException) {
+            // Tipikus szignatúra: AGP duplán-tömörítette az asset-et és
+            // a getAssets().open() inflate-elt streamje csonka, vagy a
+            // tar.xz fájl csonka volt másoláskor. A noCompress fix.
+            throw java.io.IOException(
+                "tar.xz csonka — entries=$entries, tarball-size=$total. " +
+                "Lehet AGP noCompress beállítás hiányzik a build.gradle.kts-ben " +
+                "(`androidResources.noCompress += \"xz\"`).",
+                e
+            )
         }
         Log.i(tag, "extracted: ${dst.absolutePath}, entries=$entries")
         progressCb?.invoke("kicsomagolva: $entries fájl")
