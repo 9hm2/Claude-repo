@@ -168,7 +168,12 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
                     Log.e(t ?: tag, "", e)
                 }
             })
-            session = b.getOrCreateSession(rootfs)
+            // A getOrCreateSession() IO-szálon — belül bind-elés LklService-hez
+            // + populateLklProcMirror, ami Binder-callback-re vár. Ha main-szálon
+            // futna, a Binder-callback-jét nem tudná dispatch-elni a main-Looper
+            // (deadlock), és az LKL /proc mirror üres maradna → host-/proc
+            // fallback (✗-szel jelezve a launch.sh-ban).
+            session = withContext(Dispatchers.IO) { b.getOrCreateSession(rootfs) }
             status = "shell aktív (session=${session?.hashCode()?.toString(16)})"
             Log.i("kaliterm-shell", "session attached: $status")
         }
