@@ -209,14 +209,20 @@ jobs:
           name: lkl-android-arm64
           path: /tmp/lkl-android-arm64
 
-      - name: Download LKL artifact (legutóbbi sikeres run)
+      # `workflow_conclusion: ""` (üres) — bármilyen konklúziójú PREVIOUS
+      # workflow-run-ból elfogadjuk az artifact-ot. A default ("success") túl
+      # szigorú: ha az APK build hibázott egy korábbi run-ban, az LKL job
+      # ATTÓL MÉG sikeres volt és van artifact-ja, de a workflow OVERALL
+      # konklúziója "failure" → nem találnánk semmit. Most az utolsó run-ot
+      # vesszük (függetlenül a workflow-conclusion-tól).
+      - name: Download LKL artifact (legutóbbi run)
         if: needs.lkl-android.result == 'skipped'
         uses: dawidd6/action-download-artifact@v6
         with:
           name: lkl-android-arm64
           path: /tmp/lkl-android-arm64
           workflow: kali-term-release.yml
-          workflow_conclusion: success
+          workflow_conclusion: ""
           branch: ${{ github.ref_name }}
           if_no_artifact_found: fail
 
@@ -228,14 +234,14 @@ jobs:
           name: kali-rootfs-bundle
           path: /tmp/kali-rootfs-bundle
 
-      - name: Download Kali rootfs bundle (legutóbbi sikeres run)
+      - name: Download Kali rootfs bundle (legutóbbi run)
         if: needs.kali-rootfs.result == 'skipped'
         uses: dawidd6/action-download-artifact@v6
         with:
           name: kali-rootfs-bundle
           path: /tmp/kali-rootfs-bundle
           workflow: kali-term-release.yml
-          workflow_conclusion: success
+          workflow_conclusion: ""
           branch: ${{ github.ref_name }}
           if_no_artifact_found: fail
 
