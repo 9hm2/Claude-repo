@@ -12,7 +12,12 @@ android {
     defaultConfig {
         applicationId = "dev.hm.kaliterm"
         minSdk = 24
-        targetSdk = 36
+        // targetSdk = 28 — Termux-pattern. Android Q+ (API 29+) az `app_data_file:s0`
+        // SELinux context-szel jelölt `/data/data/<pkg>/files/`-en NEM enged
+        // exec-et, ami a kicsomagolt rootfs bin-jeit (/usr/bin/bash, env, …)
+        // is érinti → proot a chrooted execve-n "Permission denied"-et kap.
+        // SDK 28-on a Q-előtti policy érvényes → exec engedélyezett.
+        targetSdk = 28
         versionCode = 1
         versionName = "0.1.0"
 
