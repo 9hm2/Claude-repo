@@ -1,12 +1,14 @@
 package dev.hm.kaliterm
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import java.io.File
 
 /**
  * Termux `TermuxService` mintára: a `TerminalSession` lifecycle-ja Service-ből
@@ -52,25 +54,29 @@ class KaliShellService : Service() {
             session?.let { return it }
             // PROOT az APK nativeLibraryDir-ből (libproot.so), NEM a filesDir-ből.
             // Lásd RootfsManager.nativeProot — Android W^X policy miatt.
-            // A proot a Termux fork NDK-build-je; tartalmazza a `--link2symlink`,
-            // `--kernel-release`, `-0` (root-id) Android-szpecifikus patcheket.
+            // LKL-proc-mirror: a futó LKL kernel /proc fájljait kiírjuk a
+            // filesDir/proot-tmp/lkl-proc/ mappába, és a launch.sh
+            // bind-mountolja a chrooted /proc helyettesítőjeként. Ezzel a
+            // chroot Kali bash `uname -r`, `cat /proc/version`, /cpuinfo
+            // stb. az LKL kernelből kap választ, NEM az Android-host kernelből.
             //
-            // LKL_KERNEL_RELEASE — ha az LKL kernel fut, az ő `osrelease`-jét
-            // (pl. "5.18.0") használjuk; egyébként fallback "6.1.0-kali".
-            // A launch.sh ezt adja át `--kernel-release` arg-szal a proot-nak,
-            // így a chrooted `uname -r` az LKL-szerű kernel-verziót mutatja.
-            val lklRelease = runCatching { NativeBridge.nativeLklKernelRelease() }
-                .getOrDefault("")
-                .takeIf { it.isNotBlank() }
+            // A `:lkl` Service-hez Binder-en kötünk — ha bind nem ready
+            // (kernel még nincs boot-olva), a launch.sh fallback-el a host-/proc-ra.
+            val lklRelease = populateLklProcMirror(rootfs)
                 ?: "6.1.0-kali"
             Log.i(tag, "LKL_KERNEL_RELEASE = $lklRelease")
 
+            val lklProcDir = File(rootfs.prootTmpDir, "lkl-proc")
             val env = arrayOf(
                 "HOME=${rootfs.bundleDir.absolutePath}",
                 "PREFIX=${rootfs.bundleDir.absolutePath}",
                 "ROOTFS_DIR=${rootfs.rootfsDir.absolutePath}",
                 "PROOT=${rootfs.nativeProot.absolutePath}",
                 "LKL_KERNEL_RELEASE=$lklRelease",
+                // LKL_PROC_DIR — a fent populate-elt mirror-mappa. A launch.sh
+                // kötelezően ellenőrzi (`[ -d $LKL_PROC_DIR ]`); ha a fájlok
+                // léteznek, bind-mountolja a chrooted /proc-ra.
+                "LKL_PROC_DIR=${lklProcDir.absolutePath}",
                 // PROOT_TMP_DIR + TMPDIR — proot kötelezően kér egy writable
                 // temp-mappát a mountpoint-emulation cache-jéhez. Android-on
                 // nincs /tmp, ezért a filesDir alá tesszük (writable+exec).
@@ -164,6 +170,98 @@ class KaliShellService : Service() {
         override fun logStackTrace(t: String?, e: Exception?) {
             Log.e(t ?: tag, "", e)
         }
+    }
+
+    /** A LklService-Binder cache — a Service-szintű bind-elésen át. */
+    @Volatile private var lklIface: ILklService? = null
+
+    private val lklConn = object : android.content.ServiceConnection {
+        override fun onServiceConnected(name: android.content.ComponentName?, b: IBinder?) {
+            Log.i(tag, "LklService bind-elve (proc-mirror-hez)")
+            lklIface = ILklService.Stub.asInterface(b)
+        }
+        override fun onServiceDisconnected(name: android.content.ComponentName?) {
+            Log.i(tag, "LklService disconnect")
+            lklIface = null
+        }
+    }
+
+    /**
+     * Az LKL kernel `/proc` fájljait kiírjuk a `rootfs.prootTmpDir/lkl-proc/`-ba,
+     * hogy a launch.sh bind-mountolhassa a chroot /proc helyettesítőjeként.
+     *
+     * Bind-szinkronizáció: max 3 sec-ig várakozik a `:lkl` Service-bind-re,
+     * majd lekérdezi a fájlokat. Ha nem sikerül, `null`-t ad vissza, és a
+     * launch.sh fallback-el a host-/proc-ra (LKL_PROC_DIR üres lesz).
+     *
+     * @return LKL kernel `osrelease` stringe (pl. "5.18.0"), vagy `null`
+     *   ha az LKL nem elérhető.
+     */
+    private fun populateLklProcMirror(rootfs: RootfsManager): String? {
+        // Bind-el ha még nincs
+        if (lklIface == null) {
+            try {
+                bindService(
+                    Intent(this, LklService::class.java),
+                    lklConn,
+                    Context.BIND_AUTO_CREATE,
+                )
+            } catch (t: Throwable) {
+                Log.w(tag, "LklService bind failed: ${t.message}")
+                return null
+            }
+        }
+        // Max 3 sec várakozás bind-ra
+        val deadline = System.currentTimeMillis() + 3000
+        while (lklIface == null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100)
+        }
+        val iface = lklIface ?: run {
+            Log.w(tag, "LKL bind timeout — fallback host-/proc-ra")
+            return null
+        }
+        // Indítsd a kernelt ha még nem fut. A startKernel idempotens
+        // (-EALREADY-t ad ha már fut).
+        runCatching { iface.startKernel() }.onSuccess { rc ->
+            if (rc == 0) {
+                Log.i(tag, "LKL kernel boot — várok 500ms a sysfs init-re")
+                Thread.sleep(500)
+            } else if (rc != -114 /*EALREADY*/) {
+                Log.w(tag, "lkl startKernel rc=$rc")
+            }
+        }
+
+        val osrelease = runCatching { iface.readLklFile("/proc/sys/kernel/osrelease") }
+            .getOrDefault("").trim()
+        if (osrelease.isEmpty()) {
+            Log.w(tag, "LKL osrelease üres — kernel nem ad /proc-fájlokat")
+            return null
+        }
+
+        // Mirror-mappa: töröljük és újra-építjük
+        val mirror = File(rootfs.prootTmpDir, "lkl-proc")
+        mirror.deleteRecursively()
+        mirror.mkdirs()
+
+        // Az LKL fájlokat 1:1 path-szerkezettel mentjük a mirror-be.
+        val procFiles = listOf(
+            "version", "cpuinfo", "meminfo", "uptime", "stat",
+            "loadavg", "filesystems", "mounts", "modules",
+            "sys/kernel/osrelease",
+            "sys/kernel/ostype",
+            "sys/kernel/hostname",
+            "sys/kernel/version",
+        )
+        for (rel in procFiles) {
+            val content = runCatching { iface.readLklFile("/proc/$rel") }.getOrDefault("")
+            if (content.isNotEmpty()) {
+                val out = File(mirror, rel)
+                out.parentFile?.mkdirs()
+                out.writeText(content)
+            }
+        }
+        Log.i(tag, "LKL proc-mirror: ${mirror.list()?.size ?: 0} fájl, osrelease=$osrelease")
+        return osrelease
     }
 
     override fun onBind(intent: Intent?): IBinder {

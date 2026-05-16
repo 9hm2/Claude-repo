@@ -148,6 +148,26 @@ class LklController(private val context: Context) {
             "ERROR PFD wrap: ${t.message}"
         }
     }
+
+    /**
+     * Phase 2c.5e — read-only fájl-tartalom az LKL kernel fájlrendszeréből.
+     * Üres stringgel tér vissza ha:
+     *   - nincs Binder bind a `:lkl` Service-hez (kernel nem boot-olt még)
+     *   - a fájl nem létezik az LKL `/proc`-jában
+     *   - Binder error (cross-process IPC fail)
+     *
+     * A KaliShellService hívja a session-create előtt, hogy egy
+     * "LKL-proc-mirror" mappát készítsen a chroot bind-mountokhoz.
+     */
+    fun readLklFile(path: String): String {
+        val live = iface ?: return ""
+        return try {
+            runCatching { live.readLklFile(path) }.getOrDefault("")
+        } catch (t: Throwable) {
+            Log.w(tag, "readLklFile($path) hiba: ${t.message}")
+            ""
+        }
+    }
 }
 
 @Composable

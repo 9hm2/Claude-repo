@@ -31,4 +31,17 @@ interface ILklService {
      */
     String attachUsbDevice(in ParcelFileDescriptor fd,
                            int vid, int pid, int busnum, int devnum);
+
+    /**
+     * Read-only fájl-olvasás a futó LKL kernel fájlrendszeréből.
+     * Pl. `/proc/version`, `/proc/sys/kernel/osrelease`, `/proc/cpuinfo`,
+     * `/proc/meminfo`. Üres stringgel tér vissza ha a kernel nem fut, vagy
+     * a fájl nem létezik / hibásan olvasható.
+     *
+     * Phase 2c.5e: ezeket a fájlokat a launch.sh bind-mountolja a chrooted
+     * /proc helyettesítőjeként — így a chrooted Kali bash a `uname -r`,
+     * `cat /proc/cpuinfo` stb. az LKL kernelből kap választ, NEM az
+     * Android-host kernelből.
+     */
+    String readLklFile(String path);
 }

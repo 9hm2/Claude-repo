@@ -101,6 +101,20 @@ class LklService : Service() {
                 "ERROR attachUsbDevice: ${t.message}"
             }
         }
+
+        /**
+         * Read-only fájl az LKL kernel fájlrendszeréből (lkl_sys_openat/read).
+         * Empty stringgel tér vissza ha a kernel nem fut, vagy a fájl nem
+         * létezik. A Binder-átvitel nagyfájlokra nem alkalmas (1MB-os
+         * Parcel-limit), de `/proc` és `/sys` fájlok mind <64KB.
+         */
+        override fun readLklFile(path: String): String =
+            try {
+                NativeBridge.nativeLklReadFile(path)
+            } catch (t: Throwable) {
+                Log.e(tag, "readLklFile($path) hiba", t)
+                ""
+            }
     }
 
     override fun onBind(intent: Intent?): IBinder {

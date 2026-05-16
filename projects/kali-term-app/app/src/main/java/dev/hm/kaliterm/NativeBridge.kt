@@ -86,6 +86,18 @@ object NativeBridge {
     external fun nativeLklKernelRelease(): String
 
     /**
+     * Phase 2c.5e — általános read-only fájl-olvasás az LKL fájlrendszeréből
+     * (`/proc/version`, `/proc/cpuinfo`, `/sys/...`). Maximum 64 KB. Üres
+     * string ha a kernel nem fut vagy a fájl nem létezik.
+     *
+     * A `LklService` ezt expozálja Binder-en át a fő process-nek
+     * (`ILklService.readLklFile`), és a `RootfsManager` ezeket a tartalmakat
+     * fájlokba menti hogy a proot launch.sh bind-mountolhassa a chrooted
+     * `/proc` helyettesítőjeként.
+     */
+    external fun nativeLklReadFile(path: String): String
+
+    /**
      * `lkl_start_kernel(lkl_host_ops, "mem=64M loglevel=8")` meghívása.
      * Visszaadás: 0 = ok, `-ENOENT` = nincs LKL .so, `-EALREADY` = már fut.
      */

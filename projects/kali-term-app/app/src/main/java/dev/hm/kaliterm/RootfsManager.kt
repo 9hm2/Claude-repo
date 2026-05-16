@@ -191,7 +191,25 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
+# 4) LKL-proc mirror bind-mount-ok összegyűjtése.
+#
+# A KaliShellService minden indításkor lekérdezi a futó LKL kernel /proc
+# fájljait Binder-en át, és az LKL_PROC_DIR env-változó által mutatott
+# mappába írja őket. Itt minden mirror-fájlra `-b mirror/foo:/proc/foo`
+# bind-flaget generálunk, így a chrooted Kali bash az LKL-ből kap választ
+# `uname -r`, `cat /proc/version`, /proc/cpuinfo stb.-re.
+LKL_PROC_BINDS=""
+if [ -d "${'$'}{LKL_PROC_DIR}" ]; then
+    for f in ${'$'}(cd "${'$'}{LKL_PROC_DIR}" && find . -type f 2>/dev/null); do
+        rel="${'$'}{f#./}"
+        LKL_PROC_BINDS="${'$'}{LKL_PROC_BINDS} -b ${'$'}{LKL_PROC_DIR}/${'$'}{rel}:/proc/${'$'}{rel}"
+    done
+    if [ -n "${'$'}{LKL_PROC_BINDS}" ]; then
+        echo "✓ LKL /proc mirror aktív (${'$'}(echo ${'$'}{LKL_PROC_BINDS} | tr ' ' '\n' | grep -c '^-b') fájl)"
+    fi
+fi
+
+# 5) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
 #
 # A binárisunk most a TERMUX FORK (build-proot.sh-szal letöltve a
 # termux/proot master-ből, NDK-szal statikusan build-elt libtalloc-cal
@@ -199,13 +217,16 @@ echo
 # kernel-hook patcheket — különben a SECCOMP_MODE_FILTER az upstream
 # proot tracee-jét SIGSYS-szel (signal 31) megöli.
 echo "─── proot indítása → /bin/bash ───"
-exec "${'$'}PROOT" \
+# A LKL_PROC_BINDS dinamikus — `set --`-szal pozícionális argokká tesszük,
+# majd `exec "${'$'}@"`-szel hívjuk. Így az üres LKL_PROC_BINDS sem ad ki
+# üres argot. (eval-mentes, robusztusabb mint az `eval exec`.)
+set -- "${'$'}{PROOT}" \
     --kill-on-exit \
     --link2symlink \
     -0 \
     --kernel-release="${'$'}{LKL_KERNEL_RELEASE:-6.1.0-kali}" \
-    -r "${'$'}ROOTFS_DIR" \
-    -w "${'$'}USER_HOME" \
+    -r "${'$'}{ROOTFS_DIR}" \
+    -w "${'$'}{USER_HOME}" \
     -b /dev \
     -b /proc \
     -b /sys \
@@ -214,14 +235,21 @@ exec "${'$'}PROOT" \
     -b /proc/self/fd/2:/dev/stderr \
     -b /proc/self/fd:/dev/fd \
     -b /dev/urandom:/dev/random \
-    -b /dev/null:/proc/sys/kernel/cap_last_cap \
+    -b /dev/null:/proc/sys/kernel/cap_last_cap
+# LKL bind-mountok hozzáadása (üres ha nincs LKL_PROC_DIR / kernel nem fut)
+if [ -n "${'$'}{LKL_PROC_BINDS}" ]; then
+    # shellcheck disable=SC2086  # word-splitting szándékos
+    set -- "${'$'}@" ${'$'}{LKL_PROC_BINDS}
+fi
+set -- "${'$'}@" \
     /usr/bin/env -i \
-        HOME="${'$'}USER_HOME" \
+        HOME="${'$'}{USER_HOME}" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         TERM="${'$'}{TERM:-xterm-256color}" \
         TMPDIR=/tmp \
         LANG=C.UTF-8 \
         /bin/bash --login
+exec "${'$'}@"
 
 # Ide csak akkor jutunk, ha az exec proot SIKERTELEN volt.
 echo "✗ HIBA: exec proot sikertelen (${'$'}?)"

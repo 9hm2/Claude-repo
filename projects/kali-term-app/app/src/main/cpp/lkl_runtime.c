@@ -901,6 +901,41 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklKernelRelease(JNIEnv *env, jobject th
     return (*env)->NewStringUTF(env, buf);
 }
 
+/* nativeLklReadFile — általános read-only fájl-olvasás az LKL fájlrendszeréből.
+ * Empty stringgel tér vissza ha a kernel nem fut, vagy a fájl nem létezik.
+ * Maximum 64KB-ig (Binder Parcel-friendly méret). */
+JNIEXPORT jstring JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklReadFile(JNIEnv *env, jobject thiz, jstring jpath)
+{
+    const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    if (!path) return (*env)->NewStringUTF(env, "");
+
+    char *buf = malloc(65536);
+    if (!buf) {
+        (*env)->ReleaseStringUTFChars(env, jpath, path);
+        return (*env)->NewStringUTF(env, "");
+    }
+    buf[0] = '\0';
+
+    pthread_mutex_lock(&g_lkl.lock);
+    lkl_resolve_locked();
+    if (g_lkl.running && g_lkl.syscall_fn) {
+        size_t len = 0;
+        long rc = lkl_read_file(path, buf, 65535, &len);
+        if (rc < 0 || len == 0) {
+            buf[0] = '\0';
+        } else {
+            buf[len] = '\0';
+        }
+    }
+    pthread_mutex_unlock(&g_lkl.lock);
+
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+    jstring result = (*env)->NewStringUTF(env, buf);
+    free(buf);
+    return result;
+}
+
 JNIEXPORT jstring JNICALL
 Java_dev_hm_kaliterm_NativeBridge_nativeLklStatus(JNIEnv *env, jobject thiz)
 {
