@@ -91,6 +91,9 @@ class RootfsManager(private val ctx: Context) {
 
             if (readyMarker.exists()) {
                 Log.i(tag, "rootfs already extracted")
+                // resolv.conf frissítése akkor is, ha a fa már ki van bontva
+                // — különben a régi (üres) resolv.conf marad, és apt fail.
+                writeResolvConf()
                 return null
             }
 
@@ -107,6 +110,15 @@ class RootfsManager(private val ctx: Context) {
             tarball.delete()  // ~38 MB már nem kell
 
             readyMarker.writeText("ready ${System.currentTimeMillis()}\n")
+
+            // DNS-resolver: a Kali rootfs `/etc/resolv.conf` üresen jön a
+            // debootstrap-ből; chrooted apt-update DNS-fail-el (Temporary
+            // failure resolving 'kali.download'). Bind-mount-tal a host
+            // resolv.conf-ot nem tudjuk át-pull-ozni (Android-permission),
+            // ezért közvetlenül public-DNS-eket írunk be. Idempotens —
+            // minden indításkor frissül, hogy a clear-data nélkül is hatós.
+            writeResolvConf()
+
             progressCb?.invoke("kész")
             return null
         } catch (t: Throwable) {
@@ -191,7 +203,7 @@ exec "${'$'}PROOT" \
     --kill-on-exit \
     --link2symlink \
     -0 \
-    --kernel-release=5.4.0-fake-kernel \
+    --kernel-release=6.1.0-kali \
     -r "${'$'}ROOTFS_DIR" \
     -w "${'$'}USER_HOME" \
     -b /dev \
@@ -216,6 +228,27 @@ echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
 echo "Drop to Android sh."
 exec /system/bin/sh
 """
+
+    /** Public DNS resolver-bejegyzések a chrooted Kali /etc/resolv.conf-ba. */
+    private fun writeResolvConf() {
+        try {
+            val resolvConf = File(rootfsDir, "etc/resolv.conf")
+            resolvConf.parentFile?.mkdirs()
+            // resolv.conf gyakran egy symlink (systemd-resolved-stúb)
+            // → előbb töröljük, hogy ne a target-et írjuk át véletlenül.
+            if (resolvConf.exists() || java.nio.file.Files.isSymbolicLink(resolvConf.toPath())) {
+                resolvConf.delete()
+            }
+            resolvConf.writeText(
+                "# kaliterm — auto-generated\n" +
+                "nameserver 1.1.1.1\n" +
+                "nameserver 8.8.8.8\n" +
+                "nameserver 9.9.9.9\n"
+            )
+        } catch (t: Throwable) {
+            Log.w(tag, "writeResolvConf failed: ${t.message}")
+        }
+    }
 
     private fun copyAsset(assetPath: String, dst: File) {
         // ctx.assets.openFd() méretet ad ha az asset uncompressed-en van az

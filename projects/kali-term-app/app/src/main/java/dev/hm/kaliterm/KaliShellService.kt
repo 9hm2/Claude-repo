@@ -72,8 +72,13 @@ class KaliShellService : Service() {
                 "PATH=/system/bin:/system/xbin",
             )
             Log.i(tag, "TerminalSession létrehozása: launch=${rootfs.launchSh.absolutePath}")
+            // KÖZVETLENÜL a launch.sh-t indítjuk shell-ként; a `#!/system/bin/sh`
+            // shebang a kernelnek tudtul adja hogy sh-val futassa. Korábban
+            // `shellPath=sh, args=[launch.sh]`-szel hívtunk, de az argv[0]-t
+            // a launch.sh-ra állította, és sh interactive módban indult
+            // ahelyett hogy a scriptet futtatta volna.
             val s = TerminalSession(
-                /* shellPath      = */ "/system/bin/sh",
+                /* shellPath      = */ rootfs.launchSh.absolutePath,
                 /* cwd            = */ rootfs.bundleDir.absolutePath,
                 /* args           = */ arrayOf(rootfs.launchSh.absolutePath),
                 /* env            = */ env,

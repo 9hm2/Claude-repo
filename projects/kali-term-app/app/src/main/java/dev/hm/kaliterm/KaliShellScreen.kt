@@ -173,13 +173,12 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
         }
     }
 
-    // imePadding(): a Composable a soft-keyboard fölött legyen, ne takarja.
-    // Plusz a Manifest-ben `windowSoftInputMode="adjustResize"` — együtt ad
-    // Termux-szerű élményt (terminál + extra-keys-row mindig látható).
+    // A windowSoftInputMode="adjustResize" (Manifest) + Scaffold-innerPadding
+    // (MainActivity) MÁR kezeli az IME-paddinget; egy plusz .imePadding() itt
+    // duplán applikálódna és üres sávot adna a billentyűzet fölött.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .imePadding()
             .padding(8.dp),
     ) {
         Row(
