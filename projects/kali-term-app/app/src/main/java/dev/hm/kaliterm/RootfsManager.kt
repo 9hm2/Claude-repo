@@ -288,6 +288,14 @@ fi
 # és inline tracee-loader-rel). Tartalmazza az Android-szpecifikus
 # kernel-hook patcheket — különben a SECCOMP_MODE_FILTER az upstream
 # proot tracee-jét SIGSYS-szel (signal 31) megöli.
+# Shim sanity-log a launch.sh-ban — látszik a TerminalView-ben.
+if [ -f /usr/lib/libkali_fuse_shim.so ] 2>/dev/null; then
+    echo "✓ FUSE shim ott van (chrooton kívülről nem ellenőrizhető)"
+fi
+ls -la "${'$'}{ROOTFS_DIR}/usr/lib/libkali_fuse_shim.so" 2>/dev/null && \
+    echo "✓ shim host-szinten kiírva" || \
+    echo "✗ shim NINCS host-szinten — writeFuseShim() error?"
+
 echo "─── proot indítása → /bin/bash ───"
 # A LKL_PROC_BINDS dinamikus — `set --`-szal pozícionális argokká tesszük,
 # majd `exec "${'$'}@"`-szel hívjuk. Így az üres LKL_PROC_BINDS sem ad ki

@@ -424,11 +424,9 @@ int closedir(DIR *dirp)
     return r_closedir ? r_closedir(dirp) : 0;
 }
 
-/* Constructor — log-message a betöltődéskor (ha LIBKALI_FUSE_DEBUG=1) */
+/* Constructor — minden indításkor stderr-re log (egyszerű diag). */
 __attribute__((constructor))
 static void shim_init(void)
 {
-    if (getenv("LIBKALI_FUSE_DEBUG")) {
-        fprintf(stderr, "[kali-fuse-shim] LD_PRELOAD aktív (sock=%s)\n", SOCK_PATH);
-    }
+    fprintf(stderr, "[kali-fuse-shim] LD_PRELOAD aktív (sock=%s)\n", SOCK_PATH);
 }

@@ -435,6 +435,16 @@ class KaliShellService : Service() {
             hit
         }
 
+        // KNOWN-DIRECTORY entry-k: az LKL /dev-en `bus`, `pts`, `shm`, …
+        // mappák. A flat top-listing fájl-ként írná őket; itt KÉNYSZERÍTJÜK
+        // hogy mappák legyenek, hogy a `/dev/bus/usb/<bus>/<dev>` placeholder
+        // alá tudjunk fésülni mappa-szerkezetet.
+        for (dn in listOf("bus", "pts", "shm", "input", "snd", "dri", "net")) {
+            val f = File(devMirror, dn)
+            if (f.exists() && !f.isDirectory) f.delete()
+            f.mkdirs()
+        }
+
         // /dev/bus/usb/<busnum>/<devnum> placeholder-fa — a libusb és lsusb
         // ezt enumerálja (USBDEVFS-szabvány). Az LKL devtmpfs nem populálja,
         // mert normál Linuxon az udev daemon kreálja. Itt magunk csináljuk
