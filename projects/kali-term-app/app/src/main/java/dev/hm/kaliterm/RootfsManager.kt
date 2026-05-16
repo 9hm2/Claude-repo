@@ -91,9 +91,10 @@ class RootfsManager(private val ctx: Context) {
 
             if (readyMarker.exists()) {
                 Log.i(tag, "rootfs already extracted")
-                // resolv.conf frissítése akkor is, ha a fa már ki van bontva
-                // — különben a régi (üres) resolv.conf marad, és apt fail.
+                // resolv.conf + keyring frissítése akkor is, ha a fa már ki van
+                // bontva — különben a régi (üres/hiányos) verzió marad.
                 writeResolvConf()
+                writeKaliKeyring()
                 return null
             }
 
@@ -118,6 +119,13 @@ class RootfsManager(private val ctx: Context) {
             // ezért közvetlenül public-DNS-eket írunk be. Idempotens —
             // minden indításkor frissül, hogy a clear-data nélkül is hatós.
             writeResolvConf()
+
+            // Kali archive GPG keyring — apt-update enélkül 'Missing key
+            // 827C8569F2518CC677FECA1AED65462EC8D5E4C5' GPG-error-rel hal el.
+            // A debootstrap a fakerooted-build során beletette a tarballba,
+            // de a chmod/symlink-ek után gyakran elveszik. Az APK assets-ben
+            // shippelt másolatot mindig át-pakoljuk.
+            writeKaliKeyring()
 
             progressCb?.invoke("kész")
             return null
@@ -237,15 +245,20 @@ else
     echo "✗ LKL /dev mirror nincs — host /dev fallback"
 fi
 # Working host-device-bindok — felülírják az LKL-mirror üres placeholder
-# fájljait (proot LATER-bind nyer szabály).
+# fájljait (proot LATER-bind nyer szabály). A bővebb listával a chrooted
+# Kali programok (cat /dev/full, dmesg, stb.) is működni fognak.
+for hostdev in null zero full urandom random tty ptmx; do
+    if [ -e "/dev/${'$'}{hostdev}" ]; then
+        DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} -b /dev/${'$'}{hostdev}:/dev/${'$'}{hostdev}"
+    fi
+done
+[ -d /dev/pts ] && DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} -b /dev/pts:/dev/pts"
+[ -e /dev/kmsg ] && DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} -b /dev/kmsg:/dev/kmsg"
+[ -e /dev/log  ] && DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} -b /dev/log:/dev/log"
+# /dev/random gyakran blockoló Android-kerneleken — urandom-mal helyettesítjük
+DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} -b /dev/urandom:/dev/random"
+# Standard stdio-fd-k és /dev/fd (a /proc/self/fd-en át, ami POSIX-standard)
 DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} \
--b /dev/null:/dev/null \
--b /dev/zero:/dev/zero \
--b /dev/urandom:/dev/urandom \
--b /dev/urandom:/dev/random \
--b /dev/tty:/dev/tty \
--b /dev/ptmx:/dev/ptmx \
--b /dev/pts:/dev/pts \
 -b /proc/self/fd:/dev/fd \
 -b /proc/self/fd/0:/dev/stdin \
 -b /proc/self/fd/1:/dev/stdout \
@@ -289,6 +302,22 @@ echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
 echo "Drop to Android sh."
 exec /system/bin/sh
 """
+
+    /** Kali archive GPG keyring beágyazása a chrooted /etc/apt/trusted.gpg.d/-be.
+     *  Az APK assets/rootfs/kali-archive-keyring.gpg-jét másoljuk. Idempotens. */
+    private fun writeKaliKeyring() {
+        try {
+            val target = File(rootfsDir, "etc/apt/trusted.gpg.d/kali-archive-keyring.gpg")
+            target.parentFile?.mkdirs()
+            ctx.assets.open("rootfs/kali-archive-keyring.gpg").use { input ->
+                FileOutputStream(target).use { input.copyTo(it) }
+            }
+            Os.chmod(target.absolutePath, "644".toInt(8))  // 0644 rwx-perm
+            Log.i(tag, "Kali keyring kiírva: ${target.absolutePath} (${target.length()}B)")
+        } catch (t: Throwable) {
+            Log.w(tag, "writeKaliKeyring failed: ${t.message}")
+        }
+    }
 
     /** Public DNS resolver-bejegyzések a chrooted Kali /etc/resolv.conf-ba. */
     private fun writeResolvConf() {
