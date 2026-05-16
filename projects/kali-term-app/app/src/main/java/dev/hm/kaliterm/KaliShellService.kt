@@ -57,7 +57,8 @@ class KaliShellService : Service() {
             // `/data/data/com.termux/files/usr/libexec/proot/loader`-en
             // keresi. A `PROOT_LOADER` env-overrideol — mi a jniLibs-be
             // pakolt `libproot_loader.so` névre mutatunk.
-            val prootLoader = File(ctx.applicationInfo.nativeLibraryDir, "libproot_loader.so")
+            val nativeLibDir = this@KaliShellService.applicationInfo.nativeLibraryDir
+            val prootLoader = File(nativeLibDir, "libproot_loader.so")
             val env = arrayOf(
                 "HOME=${rootfs.bundleDir.absolutePath}",
                 "PREFIX=${rootfs.bundleDir.absolutePath}",
@@ -72,7 +73,7 @@ class KaliShellService : Service() {
                 // LD_LIBRARY_PATH — a proot dinamikusan linkelt libtalloc.so-ra,
                 // ami a nativeLibraryDir-ben van. Default-ban az Android linker
                 // ezt megtalálja, de explicit beállítva biztosabb.
-                "LD_LIBRARY_PATH=${ctx.applicationInfo.nativeLibraryDir}",
+                "LD_LIBRARY_PATH=$nativeLibDir",
                 "USER_HOME=/root",
                 "TERM=xterm-256color",
                 "LANG=C.UTF-8",
