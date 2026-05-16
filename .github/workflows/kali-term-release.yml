@@ -20,6 +20,15 @@ on:
       - '.github/workflows/kali-term-release.yml'
   workflow_dispatch:
 
+# A `dawidd6/action-download-artifact` REST API-t hív
+# (GET /repos/{owner}/{repo}/actions/runs) hogy megtalálja a korábbi
+# workflow-run-t amiből artifact-ot húzhat. Ehhez `actions: read` kell —
+# default GITHUB_TOKEN-en NINCS megadva (Resource not accessible by
+# integration hiba). `contents: read` is kell a checkout-hoz.
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   # ── 0. Path filter — explicit shell-szkripttel, NEM dorny/paths-filter-rel.
   # Indok: a dorny/paths-filter @v3 push esemény-nél fail-safe módon **minden
