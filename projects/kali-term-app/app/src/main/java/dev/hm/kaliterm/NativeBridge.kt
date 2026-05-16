@@ -107,6 +107,16 @@ object NativeBridge {
     external fun nativeLklListDir(path: String): String
 
     /**
+     * Phase 2c.5g — control-socket szerver indítása a `:lkl` process-en.
+     * Unix-domain-socket a megadott path-on; szöveges OPEN/READ/STAT/
+     * LISTDIR/CLOSE protokoll. A chrooted libkali_fuse_shim.so connecte-el
+     * ide, és kvázi-FUSE-fát mountol (LD_PRELOAD libc-override). Idempotens.
+     *
+     * @return 0 ha sikerült (vagy már fut), negatív errno hiba esetén
+     */
+    external fun nativeLklStartControlSocket(path: String): Int
+
+    /**
      * `lkl_start_kernel(lkl_host_ops, "mem=64M loglevel=8")` meghívása.
      * Visszaadás: 0 = ok, `-ENOENT` = nincs LKL .so, `-EALREADY` = már fut.
      */

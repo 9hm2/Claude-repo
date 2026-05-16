@@ -123,6 +123,14 @@ class LklService : Service() {
                 Log.e(tag, "listLklDir($path) hiba", t)
                 ""
             }
+
+        override fun startLklControlSocket(path: String): Int =
+            try {
+                NativeBridge.nativeLklStartControlSocket(path)
+            } catch (t: Throwable) {
+                Log.e(tag, "startLklControlSocket($path) hiba", t)
+                -1
+            }
     }
 
     override fun onBind(intent: Intent?): IBinder {

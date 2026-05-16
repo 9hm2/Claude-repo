@@ -264,6 +264,16 @@ DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} \
 -b /proc/self/fd/1:/dev/stdout \
 -b /proc/self/fd/2:/dev/stderr"
 
+# LKL control-socket bind-mount: a `:lkl` process által nyitott unix-socket
+# elérhetővé tétele a chroot-on `/run/lkl-control.sock` standard path-on.
+# A jövőbeli LD_PRELOAD shim (libkali_fuse_shim.so) ezt a socket-et használja
+# élő LKL-FS hozzáféréshez.
+CTRL_SOCK_ARGS=""
+if [ -S "${'$'}{LKL_CONTROL_SOCK}" ]; then
+    CTRL_SOCK_ARGS="-b ${'$'}{LKL_CONTROL_SOCK}:/run/lkl-control.sock"
+    echo "✓ LKL control-socket: ${'$'}{LKL_CONTROL_SOCK} → /run/lkl-control.sock"
+fi
+
 # 5) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
 #
 # A binárisunk most a TERMUX FORK (build-proot.sh-szal letöltve a
@@ -285,8 +295,9 @@ set -- "${'$'}{PROOT}" \
     -b /dev/null:/proc/sys/kernel/cap_last_cap
 # /proc /sys /dev mountok — LKL-mirror (ha él) vagy host fallback. A
 # DEV_MOUNT_ARGS tartalmazza a working host /dev/* overlay-eket is.
+# CTRL_SOCK_ARGS az LKL-control-socket bind-mount-ja (Phase 2c.5g).
 # shellcheck disable=SC2086
-set -- "${'$'}@" ${'$'}{PROC_MOUNT_ARGS} ${'$'}{SYS_MOUNT_ARGS} ${'$'}{DEV_MOUNT_ARGS}
+set -- "${'$'}@" ${'$'}{PROC_MOUNT_ARGS} ${'$'}{SYS_MOUNT_ARGS} ${'$'}{DEV_MOUNT_ARGS} ${'$'}{CTRL_SOCK_ARGS}
 set -- "${'$'}@" \
     /usr/bin/env -i \
         HOME="${'$'}{USER_HOME}" \

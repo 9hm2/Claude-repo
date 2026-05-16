@@ -50,4 +50,10 @@ interface ILklService {
      *  létezik. A KaliShellService a `/dev`-listinghez használja, hogy a
      *  chrooted /dev az LKL kernel device-fáját mutassa. */
     String listLklDir(String path);
+
+    /** Phase 2c.5g — control-socket szerver indítása a `:lkl` process-en
+     *  egy unix-domain-socket-en. A chrooted libkali_fuse_shim.so connectel
+     *  ide az LKL FS valódi (élő) eléréséhez. Idempotens.
+     *  @return 0 ha OK, negatív errno hiba esetén */
+    int startLklControlSocket(String path);
 }

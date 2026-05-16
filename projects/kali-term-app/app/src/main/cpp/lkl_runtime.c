@@ -37,6 +37,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <libusb.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define LOG_TAG "kaliterm-lkl"
 #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, fmt, ##__VA_ARGS__)
@@ -1022,6 +1026,186 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStatus(JNIEnv *env, jobject thiz)
 
     pthread_mutex_unlock(&g_lkl.lock);
     return (*env)->NewStringUTF(env, out);
+}
+
+/* ── LKL CONTROL SOCKET ──────────────────────────────────────────────
+ *
+ * A `:lkl` process-en egy unix-domain-socket szerver hallgat egy
+ * konfigurálható path-on. A chrooted Kali bash-ban LD_PRELOAD-szal
+ * betöltött `libkali_fuse_shim.so` connecte-el ide, és OPEN/READ/STAT/
+ * LISTDIR/CLOSE szöveges parancsokkal kvázi-FUSE-fa-ként éri el az LKL
+ * fájlrendszerét. Ezzel a /sys, /proc, /dev path-okra valódi LKL-fd-k
+ * jönnek létre, és pl. a libusb USBDEVFS_* ioctl-jei is route-olhatók.
+ *
+ * Protokoll (text, newline-terminated):
+ *   OPEN <path> <flags>        →  OK fd=<N>     | ERR errno=<N>
+ *   READ <fd> <maxlen>         →  OK len=<N>\n<bytes>  | ERR errno=<N>
+ *   CLOSE <fd>                 →  OK            | ERR errno=<N>
+ *   STAT <path>                →  OK mode=<M> size=<S> ino=<I>  | ERR errno=<N>
+ *   LISTDIR <path>             →  OK\n<name1>\n<name2>\n\n
+ */
+static struct {
+    int       listen_fd;
+    pthread_t thread;
+    int       running;
+    char      sock_path[256];
+} g_ctrl = { -1, 0, 0, "" };
+
+static void ctrl_handle_command(int conn, char *line)
+{
+    char op[16];
+    /* op:1st token */
+    char *sp = strchr(line, ' ');
+    if (!sp) { write(conn, "ERR badcmd\n", 11); return; }
+    *sp = 0;
+    strncpy(op, line, sizeof(op) - 1);
+    op[sizeof(op) - 1] = 0;
+    char *rest = sp + 1;
+
+    if (strcmp(op, "OPEN") == 0) {
+        char *space2 = strchr(rest, ' ');
+        if (!space2) { write(conn, "ERR badarg\n", 11); return; }
+        *space2 = 0;
+        const char *path = rest;
+        int flags = atoi(space2 + 1);
+        long fd = lkl_open(path, flags);
+        char resp[64];
+        int n = snprintf(resp, sizeof(resp), "OK fd=%ld\n", fd);
+        if (fd < 0) n = snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -fd);
+        write(conn, resp, n);
+    } else if (strcmp(op, "READ") == 0) {
+        int fd; int maxlen;
+        if (sscanf(rest, "%d %d", &fd, &maxlen) != 2) {
+            write(conn, "ERR badarg\n", 11); return;
+        }
+        if (maxlen > 65536) maxlen = 65536;
+        char *buf = malloc(maxlen);
+        if (!buf) { write(conn, "ERR nomem\n", 10); return; }
+        long n = lkl_read(fd, buf, maxlen);
+        char hdr[64];
+        if (n < 0) {
+            int hn = snprintf(hdr, sizeof(hdr), "ERR errno=%ld\n", -n);
+            write(conn, hdr, hn);
+        } else {
+            int hn = snprintf(hdr, sizeof(hdr), "OK len=%ld\n", n);
+            write(conn, hdr, hn);
+            if (n > 0) write(conn, buf, n);
+        }
+        free(buf);
+    } else if (strcmp(op, "CLOSE") == 0) {
+        int fd = atoi(rest);
+        long n = lkl_close(fd);
+        char resp[64];
+        int rn = n == 0 ? snprintf(resp, sizeof(resp), "OK\n")
+                        : snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -n);
+        write(conn, resp, rn);
+    } else if (strcmp(op, "LISTDIR") == 0) {
+        const char *path = rest;
+        long fd = lkl_open(path, LKL_O_RDONLY);
+        if (fd < 0) {
+            char resp[64];
+            int n = snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -fd);
+            write(conn, resp, n);
+            return;
+        }
+        write(conn, "OK\n", 3);
+        char dirbuf[2048];
+        int loops = 0;
+        while (loops++ < 64) {
+            long bytes = lkl_call(LKL_NR_getdents64, fd,
+                                  (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
+            if (bytes <= 0) break;
+            long off = 0;
+            while (off < bytes) {
+                struct lkl_linux_dirent64 *d =
+                    (struct lkl_linux_dirent64 *)(dirbuf + off);
+                const char *name = d->d_name;
+                if (!(name[0] == '.' && (name[1] == '\0' ||
+                      (name[1] == '.' && name[2] == '\0')))) {
+                    write(conn, name, strlen(name));
+                    write(conn, "\n", 1);
+                }
+                if (d->d_reclen == 0) { loops = 64; break; }
+                off += d->d_reclen;
+            }
+        }
+        lkl_close(fd);
+        write(conn, "\n", 1);  /* empty line = end */
+    } else {
+        write(conn, "ERR unknown_op\n", 15);
+    }
+}
+
+static void *ctrl_thread_fn(void *arg)
+{
+    (void)arg;
+    while (g_ctrl.running) {
+        int conn = accept(g_ctrl.listen_fd, NULL, NULL);
+        if (conn < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        /* one-shot command loop per connection */
+        char buf[2048];
+        while (1) {
+            ssize_t n = read(conn, buf, sizeof(buf) - 1);
+            if (n <= 0) break;
+            buf[n] = 0;
+            char *line = buf;
+            char *nl;
+            while ((nl = strchr(line, '\n')) != NULL) {
+                *nl = 0;
+                if (*line) ctrl_handle_command(conn, line);
+                line = nl + 1;
+            }
+        }
+        close(conn);
+    }
+    return NULL;
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklStartControlSocket(
+    JNIEnv *env, jobject thiz, jstring jpath)
+{
+    if (g_ctrl.running) return 0;  /* idempotent */
+    const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    snprintf(g_ctrl.sock_path, sizeof(g_ctrl.sock_path), "%s", path);
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+
+    g_ctrl.listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (g_ctrl.listen_fd < 0) {
+        LOGE("ctrl-socket socket() failed: %s", strerror(errno));
+        return -errno;
+    }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, g_ctrl.sock_path, sizeof(addr.sun_path) - 1);
+    unlink(g_ctrl.sock_path);
+    if (bind(g_ctrl.listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        LOGE("ctrl-socket bind(%s): %s", g_ctrl.sock_path, strerror(errno));
+        close(g_ctrl.listen_fd);
+        g_ctrl.listen_fd = -1;
+        return -errno;
+    }
+    chmod(g_ctrl.sock_path, 0666);
+    if (listen(g_ctrl.listen_fd, 5) < 0) {
+        LOGE("ctrl-socket listen: %s", strerror(errno));
+        close(g_ctrl.listen_fd);
+        g_ctrl.listen_fd = -1;
+        return -errno;
+    }
+    g_ctrl.running = 1;
+    if (pthread_create(&g_ctrl.thread, NULL, ctrl_thread_fn, NULL) != 0) {
+        LOGE("ctrl-socket pthread_create failed");
+        g_ctrl.running = 0;
+        close(g_ctrl.listen_fd);
+        g_ctrl.listen_fd = -1;
+        return -1;
+    }
+    LOGI("LKL control socket listening at %s", g_ctrl.sock_path);
+    return 0;
 }
 
 JNIEXPORT jint JNICALL

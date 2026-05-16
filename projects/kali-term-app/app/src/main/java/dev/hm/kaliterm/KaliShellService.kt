@@ -79,6 +79,11 @@ class KaliShellService : Service() {
                 "LKL_PROC_DIR=${lklProcDir.absolutePath}",
                 "LKL_SYS_DIR=${lklSysDir.absolutePath}",
                 "LKL_DEV_DIR=${lklDevDir.absolutePath}",
+                // LKL_CONTROL_SOCK — a `:lkl` process-en indított unix-socket
+                // path-ja (host filesystem); a launch.sh bind-mountolja a
+                // chrooted `/run/lkl-control.sock`-ra, és az LD_PRELOAD shim
+                // ezen át hív LKL-syscallt.
+                "LKL_CONTROL_SOCK=${File(rootfs.prootTmpDir, "lkl-control.sock").absolutePath}",
                 // PROOT_TMP_DIR + TMPDIR — proot kötelezően kér egy writable
                 // temp-mappát a mountpoint-emulation cache-jéhez. Android-on
                 // nincs /tmp, ezért a filesDir alá tesszük (writable+exec).
@@ -478,6 +483,18 @@ class KaliShellService : Service() {
             Log.d(tag, "/proc/mounts standardizálva (sysfs/proc/devtmpfs/devpts)")
         } catch (t: Throwable) {
             Log.w(tag, "/proc/mounts write error: ${t.message}")
+        }
+
+        // Phase 2c.5g — Control-socket indítása a `:lkl` process-en. A chrooted
+        // shim (libkali_fuse_shim.so) ezen át éri el az LKL FS-t (open/read/
+        // stat/listdir-protokoll szöveges parancsokkal).
+        val ctrlSockPath = File(rootfs.prootTmpDir, "lkl-control.sock").absolutePath
+        try {
+            val rc = iface.startLklControlSocket(ctrlSockPath)
+            if (rc == 0) Log.i(tag, "LKL control socket at $ctrlSockPath")
+            else Log.w(tag, "startLklControlSocket rc=$rc")
+        } catch (t: Throwable) {
+            Log.w(tag, "startLklControlSocket failed: ${t.message}")
         }
 
         Log.i(tag, "populateLklProcMirror DONE — return osrelease=$osrelease")
