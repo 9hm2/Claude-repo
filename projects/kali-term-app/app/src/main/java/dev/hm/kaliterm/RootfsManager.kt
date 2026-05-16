@@ -179,42 +179,31 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Proot-binary tesztek — minimum-elemekkel, hogy lássuk mi futtatható
-#    a chroot-on belül. Mind rc-loggal és NEM exec-szel.
-echo "─── [0] proot -r ROOTFS /bin/ls / ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/ls / 2>&1 | head -8
-echo "[0] rc=${'$'}?"
+# 4) Proot accelerator-toggle diagnosztika.
+#
+# Az előző diag mutatta: a chrooted ELF-ek 255-szel halnak el (echo/sh/bash),
+# az ls látszólag rc=0 (de head-cal pipe-olva). Az upstream proot beépített
+# `process_vm = yes, seccomp_filter = yes` accelerator-t használ; lehet
+# ezekkel inkompatibilitás a host-kerneliel. Toggle-vel deríthetjük.
+
+echo "─── [P1] proot -r ROOTFS /bin/echo (default acceleratorok) ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/echo HELLO-DEFAULT 2>&1
+echo "[P1] rc=${'$'}?"
 echo
 
-echo "─── [1] proot -r ROOTFS /bin/echo hello ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/echo hello-from-chroot-echo 2>&1
-echo "[1] rc=${'$'}?"
+echo "─── [P2] PROOT_NO_SECCOMP=1 (seccomp-filter off) ───"
+PROOT_NO_SECCOMP=1 "${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/echo HELLO-NO-SECCOMP 2>&1
+echo "[P2] rc=${'$'}?"
 echo
 
-echo "─── [2] proot -r ROOTFS /bin/sh -c echo ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/sh -c 'echo hello-from-sh' 2>&1
-echo "[2] rc=${'$'}?"
+echo "─── [P3] --verbose proot ───"
+"${'$'}PROOT" --verbose=2 -r "${'$'}ROOTFS_DIR" /bin/echo HELLO-VERBOSE 2>&1 | head -60
+echo "[P3] rc=${'$'}{PIPESTATUS[0]}"
 echo
 
-echo "─── [3] proot -r ROOTFS /bin/bash (no args) ───"
-echo "exit" | "${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/bash 2>&1
-echo "[3] rc=${'$'}?"
-echo
-
-echo "─── [4] proot -r ROOTFS /bin/bash -c 'echo' (NO --login) ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/bash -c 'echo hello-from-bash' 2>&1
-echo "[4] rc=${'$'}?"
-echo
-
-echo "─── [5] /bin/bash létezik a host filesystemen? ───"
-ls -la "${'$'}ROOTFS_DIR/bin/bash" 2>&1
-ls -la "${'$'}ROOTFS_DIR/usr/bin/bash" 2>&1
-echo
-
-echo "─── [6] /lib/ld-linux-aarch64.so.1 (dynamic linker) ───"
-ls -la "${'$'}ROOTFS_DIR/lib" 2>&1
-ls -la "${'$'}ROOTFS_DIR/lib/ld-linux-aarch64.so.1" 2>&1
-ls -la "${'$'}ROOTFS_DIR/usr/lib/ld-linux-aarch64.so.1" 2>&1
+echo "─── [P4] proot stat-stat /bin/echo ───"
+stat "${'$'}ROOTFS_DIR/bin/echo" 2>&1
+stat "${'$'}ROOTFS_DIR/usr/bin/echo" 2>&1
 echo
 
 echo "── Diag vége; Android sh drop ──"
