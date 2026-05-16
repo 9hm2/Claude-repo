@@ -20,14 +20,12 @@ on:
       - '.github/workflows/kali-term-release.yml'
   workflow_dispatch:
 
-# A `dawidd6/action-download-artifact` REST API-t hív
-# (GET /repos/{owner}/{repo}/actions/runs) hogy megtalálja a korábbi
-# workflow-run-t amiből artifact-ot húzhat. Ehhez `actions: read` kell —
-# default GITHUB_TOKEN-en NINCS megadva (Resource not accessible by
-# integration hiba). `contents: read` is kell a checkout-hoz.
+# A `dawidd6/action-download-artifact` REST API-t hív (GET /actions/runs),
+# a cleanup-step pedig DELETE-et (régi azonos-nevű artifact-ok takarítása,
+# free-tier storage-quota ellen). `contents: read` a checkout-hoz.
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 jobs:
   # ── 0. Path filter — explicit shell-szkripttel, NEM dorny/paths-filter-rel.
@@ -124,12 +122,33 @@ jobs:
             "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$f" | head -20 || true
           done
 
+      # Free-tier artifact storage (500 MB) — minden upload előtt töröljük
+      # az azonos nevű régi artifact-okat, hogy ne halmozódjon.
+      - name: Cleanup old LKL artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # MINDEN azonos-nevű artifactot törlünk, KIVÉVE a legfrissebbet
+          # (a friss-tartalom fallbackként szolgál ha az upload kvóta-hiba
+          # miatt fail-elne).
+          ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                  --jq '[.artifacts[] | select(.name == "lkl-android-arm64")]
+                        | sort_by(.created_at) | reverse | .[1:] | .[].id' || true)
+          for id in $ids; do
+            echo "delete artifact $id"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: lkl-android-arm64
           path: projects/kernel-build/out/android-arm64/
           if-no-files-found: error
+          retention-days: 7
 
   # ── 1b. Kali rootfs + proot bundle (párhuzamosan az LKL build mellett) ─
   kali-rootfs:
@@ -165,12 +184,28 @@ jobs:
       - name: Inspect output
         run: ls -lh out/
 
+      - name: Cleanup old rootfs artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                  --jq '[.artifacts[] | select(.name == "kali-rootfs-bundle")]
+                        | sort_by(.created_at) | reverse | .[1:] | .[].id' || true)
+          for id in $ids; do
+            echo "delete artifact $id"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: kali-rootfs-bundle
           path: projects/kali-rootfs/out/
           if-no-files-found: error
+          retention-days: 7
 
   # ── 2. APK build (LKL + Kali rootfs bundled-velvel) ───────────────────
   apk:
@@ -187,6 +222,29 @@ jobs:
         working-directory: projects/kali-term-app
     steps:
       - uses: actions/checkout@v4
+
+      # Globális cleanup — ELSŐ STEP. Free-tier 500 MB artifact-storage:
+      # az LKL és kali-rootfs job-ok 7-napos retention-szel mennek, de ha
+      # azok skip-pelnek (gyakori), a régi feleslegek itt halmozódnak. Ez
+      # a step minden néven megtartja a LEGFRISSEBBET, a többit törli.
+      # Indok itt és nem a paths job-ban: storage-quota miatt az APK
+      # upload-ja fail-elne, ezért előbb ürítünk.
+      - name: Purge stale artifacts (storage-quota guard)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in lkl-android-arm64 kali-rootfs-bundle kaliterm-debug-apk; do
+            ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                    --jq "[.artifacts[] | select(.name == \"$name\")]
+                          | sort_by(.created_at) | reverse | .[1:] | .[].id" || true)
+            for id in $ids; do
+              echo "delete artifact $name#$id"
+              gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+            done
+          done
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -326,9 +384,25 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew assembleDebug --stacktrace
 
+      - name: Cleanup old APK artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                  --jq '[.artifacts[] | select(.name == "kaliterm-debug-apk")]
+                        | sort_by(.created_at) | reverse | .[1:] | .[].id' || true)
+          for id in $ids; do
+            echo "delete artifact $id"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: kaliterm-debug-apk
           path: projects/kali-term-app/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 7
