@@ -212,6 +212,45 @@ else
     echo "✗ LKL /proc mirror nincs — host /proc fallback"
 fi
 
+# /sys mirror — ugyanaz a pattern mint /proc-nál. Az LKL kernel-fa
+# nélkül a host /sys-en a Samsung/Qualcomm Android device-fák jönnének,
+# amik a chrootban irrelevánsak.
+SYS_MOUNT_ARGS=""
+if [ -d "${'$'}{LKL_SYS_DIR}" ] && [ -n "${'$'}(ls -A "${'$'}{LKL_SYS_DIR}" 2>/dev/null)" ]; then
+    SYS_MOUNT_ARGS="-b ${'$'}{LKL_SYS_DIR}:/sys"
+    echo "✓ LKL /sys mirror aktív (${'$'}(find ${'$'}{LKL_SYS_DIR} -type f 2>/dev/null | wc -l) fájl)"
+else
+    SYS_MOUNT_ARGS="-b /sys"
+    echo "✗ LKL /sys mirror nincs — host /sys fallback"
+fi
+
+# /dev — az LKL kernel device-listet mirror-eljük; a working char-device-eket
+# (null/zero/urandom/tty/ptmx/pts) host-fájl-bindokkal felülírjuk, hogy az
+# `echo > /dev/null`, `cat /dev/urandom` stb. tényleg menjen. Az Android
+# Samsung/Qualcomm device-fa eltűnik a chroot-on belül.
+DEV_MOUNT_ARGS=""
+if [ -d "${'$'}{LKL_DEV_DIR}" ] && [ -n "${'$'}(ls -A "${'$'}{LKL_DEV_DIR}" 2>/dev/null)" ]; then
+    DEV_MOUNT_ARGS="-b ${'$'}{LKL_DEV_DIR}:/dev"
+    echo "✓ LKL /dev mirror aktív (${'$'}(ls "${'$'}{LKL_DEV_DIR}" | wc -l) entry)"
+else
+    DEV_MOUNT_ARGS="-b /dev"
+    echo "✗ LKL /dev mirror nincs — host /dev fallback"
+fi
+# Working host-device-bindok — felülírják az LKL-mirror üres placeholder
+# fájljait (proot LATER-bind nyer szabály).
+DEV_MOUNT_ARGS="${'$'}{DEV_MOUNT_ARGS} \
+-b /dev/null:/dev/null \
+-b /dev/zero:/dev/zero \
+-b /dev/urandom:/dev/urandom \
+-b /dev/urandom:/dev/random \
+-b /dev/tty:/dev/tty \
+-b /dev/ptmx:/dev/ptmx \
+-b /dev/pts:/dev/pts \
+-b /proc/self/fd:/dev/fd \
+-b /proc/self/fd/0:/dev/stdin \
+-b /proc/self/fd/1:/dev/stdout \
+-b /proc/self/fd/2:/dev/stderr"
+
 # 5) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
 #
 # A binárisunk most a TERMUX FORK (build-proot.sh-szal letöltve a
@@ -230,17 +269,11 @@ set -- "${'$'}{PROOT}" \
     --kernel-release="${'$'}{LKL_KERNEL_RELEASE:-6.1.0-kali}" \
     -r "${'$'}{ROOTFS_DIR}" \
     -w "${'$'}{USER_HOME}" \
-    -b /dev \
-    -b /sys \
-    -b /proc/self/fd/0:/dev/stdin \
-    -b /proc/self/fd/1:/dev/stdout \
-    -b /proc/self/fd/2:/dev/stderr \
-    -b /proc/self/fd:/dev/fd \
-    -b /dev/urandom:/dev/random \
     -b /dev/null:/proc/sys/kernel/cap_last_cap
-# /proc mount: LKL-mirror (ha él) vagy host-/proc fallback
+# /proc /sys /dev mountok — LKL-mirror (ha él) vagy host fallback. A
+# DEV_MOUNT_ARGS tartalmazza a working host /dev/* overlay-eket is.
 # shellcheck disable=SC2086
-set -- "${'$'}@" ${'$'}{PROC_MOUNT_ARGS}
+set -- "${'$'}@" ${'$'}{PROC_MOUNT_ARGS} ${'$'}{SYS_MOUNT_ARGS} ${'$'}{DEV_MOUNT_ARGS}
 set -- "${'$'}@" \
     /usr/bin/env -i \
         HOME="${'$'}{USER_HOME}" \

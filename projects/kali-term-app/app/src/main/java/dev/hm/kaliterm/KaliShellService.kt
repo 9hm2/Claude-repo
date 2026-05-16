@@ -63,16 +63,22 @@ class KaliShellService : Service() {
             Log.i(tag, "LKL_KERNEL_RELEASE = $lklRelease")
 
             val lklProcDir = File(rootfs.prootTmpDir, "lkl-proc")
+            val lklSysDir  = File(rootfs.prootTmpDir, "lkl-sys")
+            val lklDevDir  = File(rootfs.prootTmpDir, "lkl-dev")
             val env = arrayOf(
                 "HOME=${rootfs.bundleDir.absolutePath}",
                 "PREFIX=${rootfs.bundleDir.absolutePath}",
                 "ROOTFS_DIR=${rootfs.rootfsDir.absolutePath}",
                 "PROOT=${rootfs.nativeProot.absolutePath}",
                 "LKL_KERNEL_RELEASE=$lklRelease",
-                // LKL_PROC_DIR — a fent populate-elt mirror-mappa. A launch.sh
-                // kötelezően ellenőrzi (`[ -d $LKL_PROC_DIR ]`); ha a fájlok
-                // léteznek, bind-mountolja a chrooted /proc-ra.
+                // LKL_*_DIR — a fent populate-elt mirror-mappák. A launch.sh
+                // kötelezően ellenőrzi (`[ -d $DIR ]`); ha a tartalom megvan,
+                // bind-mountolja a chrooted /proc, /sys, /dev-re. A user-él-
+                // mény: `ls /proc`, `ls /sys`, `ls /dev` mind az LKL fáját
+                // mutatja, NEM az Android-hostét.
                 "LKL_PROC_DIR=${lklProcDir.absolutePath}",
+                "LKL_SYS_DIR=${lklSysDir.absolutePath}",
+                "LKL_DEV_DIR=${lklDevDir.absolutePath}",
                 // PROOT_TMP_DIR + TMPDIR — proot kötelezően kér egy writable
                 // temp-mappát a mountpoint-emulation cache-jéhez. Android-on
                 // nincs /tmp, ezért a filesDir alá tesszük (writable+exec).
@@ -249,7 +255,7 @@ class KaliShellService : Service() {
             return null
         }
 
-        // Mirror-mappa: töröljük és újra-építjük
+        // /proc mirror — már megvan az alábbi lista
         val mirror = File(rootfs.prootTmpDir, "lkl-proc")
         mirror.deleteRecursively()
         mirror.mkdirs()
@@ -292,6 +298,72 @@ class KaliShellService : Service() {
             File(mirror, it).mkdirs()
         }
         Log.i(tag, "LKL proc-mirror: $hit fájl kiírva, osrelease=$osrelease")
+
+        // /sys mirror — az LKL kernel-szolgáltatta sysfs-fa. Az LKL-be a
+        // hozzáférhető fájlok listáját nem könnyen lehet enumerálni Binder-
+        // szinten, ezért egy ismert, gyakran látogatott halmazt kérdezünk le.
+        val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
+        sysMirror.deleteRecursively()
+        sysMirror.mkdirs()
+        val sysFiles = listOf(
+            "kernel/hostname", "kernel/osrelease", "kernel/ostype",
+            "kernel/version", "kernel/kexec_loaded",
+            "kernel/modules", "kernel/uevent_helper",
+            "kernel/cgroup/sane_behavior",
+            "module/printk/parameters/console_no_auto_verbose",
+            "fs/cgroup/cgroup.controllers",
+            "class/net/lo/address",
+            "class/net/lo/mtu",
+            "class/net/lo/operstate",
+            "class/tty/console/active",
+            "bus/usb/devices",  // directory listing — gyakran üres / lo only
+            "devices/system/cpu/online",
+            "devices/system/cpu/possible",
+            "devices/system/cpu/present",
+            "devices/virtual/dmi/id/product_name",
+            "devices/virtual/dmi/id/sys_vendor",
+            "power/state",
+            "block",
+        )
+        var sysHit = 0
+        for (rel in sysFiles) {
+            val content = runCatching { iface.readLklFile("/sys/$rel") }.getOrDefault("")
+            if (content.isNotEmpty()) {
+                val out = File(sysMirror, rel)
+                out.parentFile?.mkdirs()
+                out.writeText(content)
+                sysHit++
+            }
+        }
+        // Standard /sys directory-skeleton (a chrooted programok directory-
+        // létezést ellenőriznek)
+        listOf(
+            "bus", "class", "dev", "devices", "firmware", "fs",
+            "kernel", "module", "power", "block",
+        ).forEach { File(sysMirror, it).mkdirs() }
+        Log.i(tag, "LKL sys-mirror: $sysHit fájl kiírva")
+
+        // /dev mirror — az LKL kernel device-nodok-listet getdents64-szel
+        // listázzuk, és minden entry-re egy ÜRES placeholder regular-fájlt
+        // készítünk. A launch.sh ezeket EGYESÉVEL bind-mountolja a host
+        // megfelelő `/dev/*` char-device-eire (null, zero, urandom, tty).
+        // Eredmény: `ls /dev` az LKL device-listát mutatja (NEM a
+        // Samsung/Qualcomm Android device-okat), és a working device-ok
+        // (null, zero, urandom, …) a host-ból read-write-elhetőek.
+        val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
+        devMirror.deleteRecursively()
+        devMirror.mkdirs()
+        val devList = runCatching { iface.listLklDir("/dev") }.getOrDefault("")
+        var devHit = 0
+        devList.lines().filter { it.isNotBlank() }.forEach { name ->
+            val out = File(devMirror, name.trim())
+            if (out.path.startsWith(devMirror.path)) {
+                out.writeText("")  // placeholder; bind-mount felülírja host-fájllal
+                devHit++
+            }
+        }
+        Log.i(tag, "LKL dev-mirror: $devHit entry listázva")
+
         return osrelease
     }
 

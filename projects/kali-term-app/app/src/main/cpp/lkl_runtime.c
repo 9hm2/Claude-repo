@@ -901,6 +901,66 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklKernelRelease(JNIEnv *env, jobject th
     return (*env)->NewStringUTF(env, buf);
 }
 
+/* nativeLklListDir — egy LKL-belső könyvtár tartalmát adja vissza newline-
+ * separated stringként ("." és ".." nélkül). Empty string ha a kernel nem fut
+ * vagy a path nem létezik. A KaliShellService a /dev-listinghez használja, hogy
+ * a chrooted /dev az LKL kernel device-fájljait tükrözze. */
+JNIEXPORT jstring JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklListDir(JNIEnv *env, jobject thiz, jstring jpath)
+{
+    const char *path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    if (!path) return (*env)->NewStringUTF(env, "");
+
+    char *buf = malloc(65536);
+    if (!buf) {
+        (*env)->ReleaseStringUTFChars(env, jpath, path);
+        return (*env)->NewStringUTF(env, "");
+    }
+    buf[0] = '\0';
+
+    pthread_mutex_lock(&g_lkl.lock);
+    lkl_resolve_locked();
+    if (g_lkl.running && g_lkl.syscall_fn) {
+        long fd = lkl_open(path, LKL_O_RDONLY);
+        if (fd >= 0) {
+            char dirbuf[2048];
+            char *out = buf;
+            char *end = buf + 65535;
+            int loops = 0;
+            while (loops++ < 256) {
+                long bytes = lkl_call(LKL_NR_getdents64, fd,
+                                      (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
+                if (bytes <= 0) break;
+                long off = 0;
+                while (off < bytes) {
+                    struct lkl_linux_dirent64 *d =
+                        (struct lkl_linux_dirent64 *)(dirbuf + off);
+                    const char *name = d->d_name;
+                    if (!(name[0] == '.' && (name[1] == '\0' ||
+                          (name[1] == '.' && name[2] == '\0')))) {
+                        size_t nlen = strlen(name);
+                        if (out + nlen + 1 < end) {
+                            memcpy(out, name, nlen);
+                            out += nlen;
+                            *out++ = '\n';
+                        }
+                    }
+                    if (d->d_reclen == 0) { loops = 256; break; }
+                    off += d->d_reclen;
+                }
+            }
+            *out = '\0';
+            lkl_close(fd);
+        }
+    }
+    pthread_mutex_unlock(&g_lkl.lock);
+
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+    jstring result = (*env)->NewStringUTF(env, buf);
+    free(buf);
+    return result;
+}
+
 /* nativeLklReadFile — általános read-only fájl-olvasás az LKL fájlrendszeréből.
  * Empty stringgel tér vissza ha a kernel nem fut, vagy a fájl nem létezik.
  * Maximum 64KB-ig (Binder Parcel-friendly méret). */

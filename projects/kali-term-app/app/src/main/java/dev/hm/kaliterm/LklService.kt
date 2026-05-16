@@ -115,6 +115,14 @@ class LklService : Service() {
                 Log.e(tag, "readLklFile($path) hiba", t)
                 ""
             }
+
+        override fun listLklDir(path: String): String =
+            try {
+                NativeBridge.nativeLklListDir(path)
+            } catch (t: Throwable) {
+                Log.e(tag, "listLklDir($path) hiba", t)
+                ""
+            }
     }
 
     override fun onBind(intent: Intent?): IBinder {

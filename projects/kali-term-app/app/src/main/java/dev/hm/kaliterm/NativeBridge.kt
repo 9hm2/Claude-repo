@@ -98,6 +98,15 @@ object NativeBridge {
     external fun nativeLklReadFile(path: String): String
 
     /**
+     * Phase 2c.5f — egy LKL-belső könyvtár entry-listája (getdents64-szel).
+     * Newline-separated nevek, "." és ".." nélkül. Üres string ha a kernel
+     * nem fut vagy a path nem létezik. A KaliShellService a /dev mirror-hez
+     * használja: az LKL `/dev`-jét listázza és host-fájl-bind-okkal a chroot
+     * /dev-jébe pakolja a fontosabb device-okat.
+     */
+    external fun nativeLklListDir(path: String): String
+
+    /**
      * `lkl_start_kernel(lkl_host_ops, "mem=64M loglevel=8")` meghívása.
      * Visszaadás: 0 = ok, `-ENOENT` = nincs LKL .so, `-EALREADY` = már fut.
      */

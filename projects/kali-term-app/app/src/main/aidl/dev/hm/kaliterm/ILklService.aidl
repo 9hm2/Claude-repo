@@ -44,4 +44,10 @@ interface ILklService {
      * Android-host kernelből.
      */
     String readLklFile(String path);
+
+    /** Egy LKL-belső könyvtár tartalmát adja vissza newline-separated stringként
+     *  ("." és ".." nélkül). Üres string ha a kernel nem fut vagy a path nem
+     *  létezik. A KaliShellService a `/dev`-listinghez használja, hogy a
+     *  chrooted /dev az LKL kernel device-fáját mutassa. */
+    String listLklDir(String path);
 }
