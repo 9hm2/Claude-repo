@@ -30,17 +30,29 @@ class RootfsManager(private val ctx: Context) {
 
     private val tag = "kaliterm-rootfs"
 
-    /** A bundle gyökere (proot, launch.sh, tar.xz másolat). */
+    /** A bundle gyökere (launch.sh + esetleg tar.xz másolat). */
     val bundleDir: File = File(ctx.filesDir, "rootfs-bundle")
     /** A kibontott Kali fa gyökere (chroot-target). */
     val rootfsDir: File = File(ctx.filesDir, "rootfs")
     /** Marker amit a kicsomagolás végén írunk. */
     private val readyMarker: File = File(rootfsDir, ".kaliterm-ready")
 
-    val prootBin: File   get() = File(bundleDir, "proot")
+    /**
+     * A proot binary helye — a `nativeLibraryDir`, NEM a `filesDir`.
+     *
+     * Indok (Android W^X policy, target SDK 29+): a `/data/data/<pkg>/files/`
+     * mountpoint nem-executable. Ha innen próbálnánk forkkal indítani a
+     * proot-ot, "Permission denied"-et kapnánk akkor is, ha az `rwx` bit
+     * minden szinten be van állítva.
+     *
+     * Megoldás (Termux-pattern): a proot-ot `libproot.so` néven az APK
+     * jniLibs/arm64-v8a/ mappájába rakjuk. A package manager kicsomagolja
+     * `applicationInfo.nativeLibraryDir`-be, ami read-only DE executable.
+     */
+    val nativeProot: File = File(ctx.applicationInfo.nativeLibraryDir, "libproot.so")
     val launchSh: File   get() = File(bundleDir, "launch.sh")
 
-    fun isReady(): Boolean = readyMarker.exists() && prootBin.canExecute()
+    fun isReady(): Boolean = readyMarker.exists() && nativeProot.canExecute()
 
     /**
      * Előkészíti a rootfs-t. UI-thread-en NE hívd — ez lassú (tar+xz).
@@ -51,11 +63,24 @@ class RootfsManager(private val ctx: Context) {
             bundleDir.mkdirs()
             rootfsDir.mkdirs()
 
-            // 1) proot + launch.sh másolása assets-ből
-            progressCb?.invoke("proot kicsomagolása…")
-            copyAsset("rootfs/proot",     File(bundleDir, "proot"))
-            copyAsset("rootfs/launch.sh", File(bundleDir, "launch.sh"))
-            File(bundleDir, "proot").setExecutable(true, false)
+            // 1) Sanity: a proot binárisnak léteznie + futtathatónak kell
+            //    lennie a nativeLibraryDir-ben. Ha nincs ott, az APK packelése
+            //    rossz volt (jniLibs/arm64-v8a/libproot.so hiányzik).
+            if (!nativeProot.exists()) {
+                return "HIBA: proot binary nincs a nativeLibraryDir-ben " +
+                    "(${nativeProot.absolutePath}). APK build hibás?"
+            }
+            if (!nativeProot.canExecute()) {
+                return "HIBA: ${nativeProot.absolutePath} nem futtatható (chmod?)"
+            }
+
+            // 2) Launch.sh INLINE generálása — NEM az asset-bundle-ből másoljuk.
+            //    Indok: a bundled launch.sh egy hardcoded `PROOT="$PREFIX/proot"`
+            //    sorral jön, ami a régi (rossz) layout-ot feltételezi. Mi most
+            //    a nativeLibraryDir-ből futtatjuk a proot-ot, és az env-ben
+            //    átadott `$PROOT`-ot kell tisztelnünk.
+            progressCb?.invoke("launch.sh generálása…")
+            File(bundleDir, "launch.sh").writeText(launchScriptTemplate())
             File(bundleDir, "launch.sh").setExecutable(true, false)
 
             if (readyMarker.exists()) {
@@ -63,7 +88,7 @@ class RootfsManager(private val ctx: Context) {
                 return null
             }
 
-            // 2) tar.xz kicsomagolása
+            // 3) tar.xz kicsomagolása
             progressCb?.invoke("Kali rootfs kicsomagolása (38 MB)…")
             val tarball = File(bundleDir, "kalifs-arm64-minimal.tar.xz")
             copyAsset("rootfs/kalifs-arm64-minimal.tar.xz", tarball)
@@ -83,6 +108,93 @@ class RootfsManager(private val ctx: Context) {
             return "RootfsManager hiba: ${t.javaClass.simpleName}: ${t.message}"
         }
     }
+
+    /**
+     * Launch.sh inline template — a TerminalSession `sh launch.sh`-szel hívja.
+     *
+     * Bemenet env-ből (a KaliShellService állítja be):
+     *   PREFIX        a bundleDir absolute path-ja
+     *   ROOTFS_DIR    a kicsomagolt Kali fa absolute path-ja
+     *   PROOT         a proot binary teljes path-ja (nativeLibraryDir-ből)
+     *   USER_HOME     default /root
+     *
+     * Kimenet: vagy belépés a Kali-bash-ba (siker), vagy diagnosztika +
+     * fallback Android-sh-ba (hiba). SOSEM tér vissza üres state-tel a hívóhoz.
+     */
+    private fun launchScriptTemplate(): String = """#!/system/bin/sh
+# kaliterm rootfs launcher — proot wrapper diagnosztikával.
+# A PROOT env-változót az Android-oldal állítja be (nativeLibraryDir/libproot.so),
+# mert a `/data/data/<pkg>/files/` nem-executable (Android W^X policy).
+
+: "${'$'}{PREFIX:?PREFIX env változó kell}"
+: "${'$'}{ROOTFS_DIR:=${'$'}PREFIX/../rootfs}"
+: "${'$'}{USER_HOME:=/root}"
+: "${'$'}{PROOT:=${'$'}PREFIX/proot}"  # fallback ha az Android-oldal nem állítja be
+
+echo "════════════════════════════════════════════════"
+echo " kaliterm — proot launcher"
+echo "════════════════════════════════════════════════"
+echo "PREFIX     = ${'$'}PREFIX"
+echo "ROOTFS_DIR = ${'$'}ROOTFS_DIR"
+echo "PROOT      = ${'$'}PROOT"
+echo "USER_HOME  = ${'$'}USER_HOME"
+echo
+
+# 1) proot bin sanity
+if [ ! -f "${'$'}PROOT" ]; then
+    echo "✗ HIBA: ${'$'}PROOT nem létezik"
+    echo "Drop Android sh-ba a vizsgálathoz."
+    exec /system/bin/sh
+fi
+if [ ! -x "${'$'}PROOT" ]; then
+    echo "✗ HIBA: ${'$'}PROOT nem futtatható (W^X policy?)"
+    ls -la "${'$'}PROOT"
+    exec /system/bin/sh
+fi
+
+# 2) proot --version (gyors sanity, hogy linkel-e a libc)
+echo "─── proot --version ───"
+"${'$'}PROOT" --version 2>&1 || {
+    echo "✗ HIBA: proot --version sikertelen (linkelési/ABI hiba?)"
+    exec /system/bin/sh
+}
+echo
+
+# 3) Rootfs sanity
+if [ ! -d "${'$'}ROOTFS_DIR" ]; then
+    echo "✗ HIBA: ${'$'}ROOTFS_DIR nincs (rootfs nem lett kicsomagolva?)"
+    exec /system/bin/sh
+fi
+if [ ! -x "${'$'}ROOTFS_DIR/bin/bash" ]; then
+    echo "✗ HIBA: ${'$'}ROOTFS_DIR/bin/bash nincs vagy nem futtatható"
+    ls -la "${'$'}ROOTFS_DIR/bin/" 2>&1 | head -20
+    exec /system/bin/sh
+fi
+echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
+echo
+
+# 4) Indítás — bash -l a Kali rootfs-ben
+echo "─── proot indítása → /bin/bash ───"
+exec "${'$'}PROOT" \
+    --link2symlink \
+    --kill-on-exit \
+    -0 \
+    -r "${'$'}ROOTFS_DIR" \
+    -b /dev \
+    -b /proc \
+    -b /sys \
+    -w "${'$'}USER_HOME" \
+    /usr/bin/env -i \
+        HOME="${'$'}USER_HOME" \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        TERM="${'$'}{TERM:-xterm-256color}" \
+        LANG=C.UTF-8 \
+        /bin/bash -l
+
+# Ide csak akkor jutunk, ha az exec proot SIKERTELEN volt.
+echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
+exec /system/bin/sh
+"""
 
     private fun copyAsset(assetPath: String, dst: File) {
         ctx.assets.open(assetPath).use { input ->

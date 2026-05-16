@@ -230,9 +230,25 @@ jobs:
           # MEGJEGYZÉS — a tarball ~250 MB, jelentősen megnöveli az APK-t.
           # Egy későbbi iterációban érdemes lehet on-demand letöltésre váltani
           # (a bundle-t első indításkor tölti le az app, nem packolja az APK-ba).
+          #
+          # FONTOS — Android W^X (target SDK 29+): a `/data/data/<pkg>/files/`
+          # nem-executable mountpoint, ezért a `proot` binárist NEM tehetjük
+          # az assets-be (onnan kicsomagolva nem indítható, "Permission
+          # denied"). A Termux megoldás: `libproot.so` néven a jniLibs-be,
+          # ahonnan a package manager a `nativeLibraryDir`-be teszi, ami
+          # read-only de **executable**. A launch.sh + tarball még mehet
+          # assets-be (script + adat, nem exec).
           if [[ -d /tmp/kali-rootfs-bundle ]]; then
             for f in /tmp/kali-rootfs-bundle/*; do
-              cp -v "$f" "$ROOTFS_ASSETS/"
+              name="$(basename "$f")"
+              case "$name" in
+                proot)
+                  cp -v "$f" "$JNILIB_DIR/libproot.so"
+                  ;;
+                *)
+                  cp -v "$f" "$ROOTFS_ASSETS/"
+                  ;;
+              esac
             done
           fi
 

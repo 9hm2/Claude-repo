@@ -91,6 +91,15 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        // KÖTELEZŐ — AGP 8+ alapból `useLegacyPackaging = false`, ami azt
+        // jelenti hogy a .so fájlok COMPRESSED-ek maradnak az APK-ban és
+        // SOSEM kerülnek ki a fájlrendszerre. Mi a `libproot.so`-t ELF
+        // executable-ként akarjuk futtatni (NEM dlopen-nel), tehát szükségünk
+        // van a kicsomagolt path-ra a `nativeLibraryDir`-ben.
+        // Termux is így csinálja.
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 

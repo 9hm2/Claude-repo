@@ -50,10 +50,13 @@ class KaliShellService : Service() {
          */
         fun getOrCreateSession(rootfs: RootfsManager): TerminalSession {
             session?.let { return it }
+            // PROOT az APK nativeLibraryDir-ből (libproot.so), NEM a filesDir-ből.
+            // Lásd RootfsManager.nativeProot — Android W^X policy miatt.
             val env = arrayOf(
                 "HOME=${rootfs.bundleDir.absolutePath}",
                 "PREFIX=${rootfs.bundleDir.absolutePath}",
                 "ROOTFS_DIR=${rootfs.rootfsDir.absolutePath}",
+                "PROOT=${rootfs.nativeProot.absolutePath}",
                 "USER_HOME=/root",
                 "TERM=xterm-256color",
                 "LANG=C.UTF-8",
