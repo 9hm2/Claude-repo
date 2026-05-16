@@ -57,6 +57,11 @@ class KaliShellService : Service() {
                 "PREFIX=${rootfs.bundleDir.absolutePath}",
                 "ROOTFS_DIR=${rootfs.rootfsDir.absolutePath}",
                 "PROOT=${rootfs.nativeProot.absolutePath}",
+                // PROOT_TMP_DIR + TMPDIR — proot kötelezően kér egy writable
+                // temp-mappát a mountpoint-emulation cache-jéhez. Android-on
+                // nincs /tmp, ezért a filesDir alá tesszük (writable+exec).
+                "PROOT_TMP_DIR=${rootfs.prootTmpDir.absolutePath}",
+                "TMPDIR=${rootfs.prootTmpDir.absolutePath}",
                 "USER_HOME=/root",
                 "TERM=xterm-256color",
                 "LANG=C.UTF-8",

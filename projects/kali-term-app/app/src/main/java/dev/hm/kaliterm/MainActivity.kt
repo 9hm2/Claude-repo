@@ -2,6 +2,7 @@ package dev.hm.kaliterm
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
@@ -49,11 +50,14 @@ class MainActivity : ComponentActivity() {
             AppTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     var screen by remember { mutableStateOf("home") }
+                    // Android rendszer-back gomb: ha sub-screen-en vagyunk,
+                    // vissza a Home-ra; Home-on hagyjuk a default Activity-exitet.
+                    BackHandler(enabled = screen != "home") { screen = "home" }
                     when (screen) {
                         "shell" -> androidx.compose.foundation.layout.Box(
                             modifier = Modifier.fillMaxSize().padding(innerPadding)
                         ) {
-                            KaliShellScreen()
+                            KaliShellScreen(onBack = { screen = "home" })
                         }
                         "logs" -> androidx.compose.foundation.layout.Box(
                             modifier = Modifier.fillMaxSize().padding(innerPadding)

@@ -65,7 +65,7 @@ import kotlinx.coroutines.withContext
  *   - extra-keys row alul (Esc, Tab, Ctrl, ↑↓←→, HOME, END, PgUp, PgDn, …)
  */
 @Composable
-fun KaliShellScreen() {
+fun KaliShellScreen(onBack: () -> Unit = {}) {
     val ctx = LocalContext.current
     val rootfs = remember { RootfsManager(ctx) }
 
@@ -171,11 +171,17 @@ fun KaliShellScreen() {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
-        Text(
-            text = "Kali shell — $status",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = onBack) { Text("← Vissza") }
+            Text(
+                text = "Kali shell — $status",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
         if (!ready) {
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())

@@ -34,6 +34,10 @@ class RootfsManager(private val ctx: Context) {
     val bundleDir: File = File(ctx.filesDir, "rootfs-bundle")
     /** A kibontott Kali fa gyökere (chroot-target). */
     val rootfsDir: File = File(ctx.filesDir, "rootfs")
+    /** Proot temp-mappa — `PROOT_TMP_DIR` és `TMPDIR` env-változókhoz.
+     *  Android-on nincs `/tmp`, proot enélkül `proot_tmp_dir not set`
+     *  hibával hal el. A filesDir alatt writable+executable terület. */
+    val prootTmpDir: File = File(ctx.filesDir, "proot-tmp")
     /** Marker amit a kicsomagolás végén írunk. */
     private val readyMarker: File = File(rootfsDir, ".kaliterm-ready")
 
@@ -62,6 +66,7 @@ class RootfsManager(private val ctx: Context) {
         try {
             bundleDir.mkdirs()
             rootfsDir.mkdirs()
+            prootTmpDir.mkdirs()
 
             // 1) Sanity: a proot binárisnak léteznie + futtathatónak kell
             //    lennie a nativeLibraryDir-ben. Ha nincs ott, az APK packelése
