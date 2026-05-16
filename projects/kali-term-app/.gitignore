@@ -20,3 +20,11 @@ release/
 app/src/main/jniLibs/arm64-v8a/*.so
 app/src/main/jniLibs/arm64-v8a/*.a
 app/src/main/assets/lkl/
+
+# CI által letöltött Kali rootfs bundle — generált, nem tracked.
+app/src/main/assets/rootfs/
+
+# Termux upstream vendor modulok — fetch-termux-terminal.sh tölti le
+# build-időben (CI / lokális). Sosem commitoljuk a vendor source-ot.
+/terminal-emulator/
+/terminal-view/
