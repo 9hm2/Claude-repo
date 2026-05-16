@@ -243,24 +243,44 @@ class KaliShellService : Service() {
         mirror.deleteRecursively()
         mirror.mkdirs()
 
-        // Az LKL fájlokat 1:1 path-szerkezettel mentjük a mirror-be.
+        // Standard /proc fájlok az LKL kernelből. Bővebb listával a chrooted
+        // `ls /proc` az LKL-fa tartalmát mutatja, nem a host-Android-fájlokat.
         val procFiles = listOf(
             "version", "cpuinfo", "meminfo", "uptime", "stat",
             "loadavg", "filesystems", "mounts", "modules",
+            "partitions", "swaps", "vmstat", "diskstats",
+            "interrupts", "softirqs", "buddyinfo", "zoneinfo",
+            "slabinfo", "iomem", "ioports", "cmdline", "consoles",
+            "devices", "execdomains", "fb", "kallsyms", "key-users",
+            "keys", "locks", "misc", "self/maps", "self/status",
+            "self/stat", "self/cmdline", "self/comm", "self/cwd",
+            "self/environ", "self/exe", "self/limits", "self/mountinfo",
+            "self/mounts", "self/mountstats",
             "sys/kernel/osrelease",
             "sys/kernel/ostype",
             "sys/kernel/hostname",
             "sys/kernel/version",
+            "sys/kernel/domainname",
+            "sys/kernel/random/boot_id",
+            "sys/kernel/random/uuid",
         )
+        var hit = 0
         for (rel in procFiles) {
             val content = runCatching { iface.readLklFile("/proc/$rel") }.getOrDefault("")
             if (content.isNotEmpty()) {
                 val out = File(mirror, rel)
                 out.parentFile?.mkdirs()
                 out.writeText(content)
+                hit++
             }
         }
-        Log.i(tag, "LKL proc-mirror: ${mirror.list()?.size ?: 0} fájl, osrelease=$osrelease")
+        // Egy üres `sys`, `bus`, `tty` mappa is — a /proc/sys, /proc/bus stb.
+        // standard layout-jelei. (A chrooted bash sokszor csak directory-
+        // létezést ellenőriz, nem a tartalmat.)
+        listOf("sys/fs", "sys/net", "sys/vm", "bus", "tty", "fs", "net").forEach {
+            File(mirror, it).mkdirs()
+        }
+        Log.i(tag, "LKL proc-mirror: $hit fájl kiírva, osrelease=$osrelease")
         return osrelease
     }
 

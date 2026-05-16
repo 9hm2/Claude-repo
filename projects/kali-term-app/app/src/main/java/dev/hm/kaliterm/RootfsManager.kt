@@ -191,22 +191,25 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) LKL-proc mirror bind-mount-ok összegyűjtése.
+# 4) LKL-proc TELJES mirror — a chrooted /proc = LKL-fa, NEM host-/proc.
 #
-# A KaliShellService minden indításkor lekérdezi a futó LKL kernel /proc
-# fájljait Binder-en át, és az LKL_PROC_DIR env-változó által mutatott
-# mappába írja őket. Itt minden mirror-fájlra `-b mirror/foo:/proc/foo`
-# bind-flaget generálunk, így a chrooted Kali bash az LKL-ből kap választ
-# `uname -r`, `cat /proc/version`, /proc/cpuinfo stb.-re.
-LKL_PROC_BINDS=""
-if [ -d "${'$'}{LKL_PROC_DIR}" ]; then
-    for f in ${'$'}(cd "${'$'}{LKL_PROC_DIR}" && find . -type f 2>/dev/null); do
-        rel="${'$'}{f#./}"
-        LKL_PROC_BINDS="${'$'}{LKL_PROC_BINDS} -b ${'$'}{LKL_PROC_DIR}/${'$'}{rel}:/proc/${'$'}{rel}"
-    done
-    if [ -n "${'$'}{LKL_PROC_BINDS}" ]; then
-        echo "✓ LKL /proc mirror aktív (${'$'}(echo ${'$'}{LKL_PROC_BINDS} | tr ' ' '\n' | grep -c '^-b') fájl)"
-    fi
+# A KaliShellService a session-create előtt feltöltötte az LKL_PROC_DIR
+# env-mutató mappát az LKL kernel /proc fájljaival. Mi most TELJESEN ezzel
+# helyettesítjük a chrooted /proc-ot:
+#   -b LKL_PROC_DIR:/proc            — fő mount: minden LKL-fájl látszik
+#   -b /proc/self:/proc/self         — overlay: bash-coreutils saját
+#                                       process-info-jához (PID, fd-k,
+#                                       /proc/self/maps stb. kötelező)
+# Eredmény: chrooted `ls /proc` az LKL-fájl-listet adja (osrelease,
+# cpuinfo, …), DE bash a saját process-status-ját is meg tudja olvasni.
+PROC_MOUNT_ARGS=""
+if [ -d "${'$'}{LKL_PROC_DIR}" ] && [ -n "${'$'}(ls -A "${'$'}{LKL_PROC_DIR}" 2>/dev/null)" ]; then
+    PROC_MOUNT_ARGS="-b ${'$'}{LKL_PROC_DIR}:/proc -b /proc/self:/proc/self"
+    echo "✓ LKL /proc mirror aktív (${'$'}(find ${'$'}{LKL_PROC_DIR} -type f 2>/dev/null | wc -l) fájl)"
+else
+    # Fallback: ha az LKL nem fut / kernel boot fail, host-/proc.
+    PROC_MOUNT_ARGS="-b /proc"
+    echo "✗ LKL /proc mirror nincs — host /proc fallback"
 fi
 
 # 5) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
@@ -228,7 +231,6 @@ set -- "${'$'}{PROOT}" \
     -r "${'$'}{ROOTFS_DIR}" \
     -w "${'$'}{USER_HOME}" \
     -b /dev \
-    -b /proc \
     -b /sys \
     -b /proc/self/fd/0:/dev/stdin \
     -b /proc/self/fd/1:/dev/stdout \
@@ -236,11 +238,9 @@ set -- "${'$'}{PROOT}" \
     -b /proc/self/fd:/dev/fd \
     -b /dev/urandom:/dev/random \
     -b /dev/null:/proc/sys/kernel/cap_last_cap
-# LKL bind-mountok hozzáadása (üres ha nincs LKL_PROC_DIR / kernel nem fut)
-if [ -n "${'$'}{LKL_PROC_BINDS}" ]; then
-    # shellcheck disable=SC2086  # word-splitting szándékos
-    set -- "${'$'}@" ${'$'}{LKL_PROC_BINDS}
-fi
+# /proc mount: LKL-mirror (ha él) vagy host-/proc fallback
+# shellcheck disable=SC2086
+set -- "${'$'}@" ${'$'}{PROC_MOUNT_ARGS}
 set -- "${'$'}@" \
     /usr/bin/env -i \
         HOME="${'$'}{USER_HOME}" \
