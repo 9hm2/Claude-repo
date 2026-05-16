@@ -360,7 +360,7 @@ class KaliShellService : Service() {
         val procMirror = File(rootfs.prootTmpDir, "lkl-proc")
         val procReady = File(procMirror, ".kaliterm-mirror-ready")
         val procFresh = procReady.exists() &&
-            (System.currentTimeMillis() - procReady.lastModified()) < 10 * 60_000L
+            (System.currentTimeMillis() - procReady.lastModified()) < 60_000L
         val procHit = if (procFresh) {
             Log.i(tag, "LKL /proc cache HIT — skip populate")
             procMirror.list()?.size ?: 0
@@ -382,7 +382,7 @@ class KaliShellService : Service() {
         val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
         val sysReady = File(sysMirror, ".kaliterm-mirror-ready")
         val sysFresh = sysReady.exists() &&
-            (System.currentTimeMillis() - sysReady.lastModified()) < 10 * 60_000L
+            (System.currentTimeMillis() - sysReady.lastModified()) < 60_000L
         val sysHit = if (sysFresh) {
             Log.i(tag, "LKL /sys cache HIT — skip populate")
             sysMirror.list()?.size ?: 0
@@ -405,7 +405,7 @@ class KaliShellService : Service() {
         val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
         val devReady = File(devMirror, ".kaliterm-mirror-ready")
         val devFresh = devReady.exists() &&
-            (System.currentTimeMillis() - devReady.lastModified()) < 10 * 60_000L
+            (System.currentTimeMillis() - devReady.lastModified()) < 60_000L
         val devHit = if (devFresh) {
             Log.i(tag, "LKL /dev cache HIT — skip populate")
             devMirror.list()?.size ?: 0
@@ -429,6 +429,35 @@ class KaliShellService : Service() {
             Log.i(tag, "LKL /dev top-listing: $hit entry")
             hit
         }
+
+        // /dev/bus/usb/<busnum>/<devnum> placeholder-fa — a libusb és lsusb
+        // ezt enumerálja (USBDEVFS-szabvány). Az LKL devtmpfs nem populálja,
+        // mert normál Linuxon az udev daemon kreálja. Itt magunk csináljuk
+        // a /sys/bus/usb/devices/<bus>-<port>/{busnum,devnum} alapján.
+        try {
+            val usbDevsDir = File(sysMirror, "bus/usb/devices")
+            if (usbDevsDir.isDirectory) {
+                usbDevsDir.listFiles()?.forEach { devDir ->
+                    val busnumFile = File(devDir, "busnum")
+                    val devnumFile = File(devDir, "devnum")
+                    if (busnumFile.exists() && devnumFile.exists()) {
+                        val busnum = busnumFile.readText().trim()
+                        val devnum = devnumFile.readText().trim()
+                        if (busnum.isNotEmpty() && devnum.isNotEmpty()) {
+                            val bus3 = busnum.padStart(3, '0')
+                            val dev3 = devnum.padStart(3, '0')
+                            val node = File(devMirror, "bus/usb/$bus3/$dev3")
+                            node.parentFile?.mkdirs()
+                            runCatching { node.writeText("") }
+                            Log.d(tag, "/dev/bus/usb/$bus3/$dev3 placeholder kreálva")
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(tag, "/dev/bus/usb placeholder error: ${t.message}")
+        }
+
         Log.i(tag, "populateLklProcMirror DONE — return osrelease=$osrelease")
 
         return osrelease
