@@ -1061,6 +1061,38 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStart(JNIEnv *env, jobject thiz)
     if (rc == 0) {
         g_lkl.running = 1;
         LOGI("lkl_start_kernel OK");
+
+        /* devtmpfs mount /dev-re: a kernel által auto-kreált device-nodok
+         * (null, zero, urandom, console, tty, ptmx, …) az LKL-en belül a
+         * /dev-ben kell hogy megjelenjenek, hogy a chrooted-mirror lássa
+         * őket. Az LKL CONFIG_DEVTMPFS_MOUNT NEM aktív build-time, ezért
+         * user-mode-on mountoljuk. */
+        long mr = lkl_mkdir("/dev", 0755);
+        (void)mr;  /* EEXIST OK */
+        long mt = lkl_mount("none", "/dev", "devtmpfs", 0, NULL);
+        if (mt == 0) {
+            LOGI("devtmpfs mounted on /dev");
+        } else {
+            LOGI("devtmpfs mount rc=%ld (CONFIG_DEVTMPFS hiányozhat)", mt);
+        }
+
+        /* devpts mount /dev/pts-re — pty-knek kell. */
+        long mp = lkl_mkdir("/dev/pts", 0755);
+        (void)mp;
+        long mpt = lkl_mount("devpts", "/dev/pts", "devpts", 0, NULL);
+        if (mpt == 0) LOGI("devpts mounted on /dev/pts");
+
+        /* sysfs auto-mountolva általában; explicit fallback. */
+        long ms = lkl_mkdir("/sys", 0755);
+        (void)ms;
+        long mss = lkl_mount("sysfs", "/sys", "sysfs", 0, NULL);
+        if (mss == 0) LOGI("sysfs explicit re-mount on /sys");
+
+        /* proc szintén — biztos ami biztos. */
+        long mpp = lkl_mkdir("/proc", 0755);
+        (void)mpp;
+        long mpps = lkl_mount("proc", "/proc", "proc", 0, NULL);
+        if (mpps == 0) LOGI("proc explicit re-mount on /proc");
     } else {
         LOGE("lkl_start_kernel rc=%d", rc);
     }
