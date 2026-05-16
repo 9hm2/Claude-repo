@@ -179,43 +179,42 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Proot indítási diagnosztika — minden lépés stderr→stdout-tal,
-#    NEM exec-szel hogy a kimenet tovább-folytatódjon az első hibánál.
-echo "─── [A] proot -r ROOTFS /bin/bash --login -c 'echo OK' ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/bash --login -c 'echo BASH-HELLO; uname -a; pwd; whoami' 2>&1
-echo "[A] rc=${'$'}?"
+# 4) Proot-binary tesztek — minimum-elemekkel, hogy lássuk mi futtatható
+#    a chroot-on belül. Mind rc-loggal és NEM exec-szel.
+echo "─── [0] proot -r ROOTFS /bin/ls / ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/ls / 2>&1 | head -8
+echo "[0] rc=${'$'}?"
 echo
 
-echo "─── [B] proot + --kernel-release ───"
-"${'$'}PROOT" --kernel-release=5.4.0-fake-kernel -r "${'$'}ROOTFS_DIR" \
-    /bin/bash --login -c 'echo TEST-B; uname -r' 2>&1
-echo "[B] rc=${'$'}?"
+echo "─── [1] proot -r ROOTFS /bin/echo hello ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/echo hello-from-chroot-echo 2>&1
+echo "[1] rc=${'$'}?"
 echo
 
-echo "─── [C] proot + bind /dev /proc /sys ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" \
-    -b /dev -b /proc -b /sys \
-    /bin/bash --login -c 'echo TEST-C; ls /dev | head -5' 2>&1
-echo "[C] rc=${'$'}?"
+echo "─── [2] proot -r ROOTFS /bin/sh -c echo ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/sh -c 'echo hello-from-sh' 2>&1
+echo "[2] rc=${'$'}?"
 echo
 
-echo "─── [D] proot + Termux fd-bindjelölői ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" \
-    -b /dev -b /proc -b /sys \
-    -b /proc/self/fd/0:/dev/stdin \
-    -b /proc/self/fd/1:/dev/stdout \
-    -b /proc/self/fd/2:/dev/stderr \
-    -b /dev/urandom:/dev/random \
-    /bin/bash --login -c 'echo TEST-D' 2>&1
-echo "[D] rc=${'$'}?"
+echo "─── [3] proot -r ROOTFS /bin/bash (no args) ───"
+echo "exit" | "${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/bash 2>&1
+echo "[3] rc=${'$'}?"
 echo
 
-echo "─── [E] proot + env -i + workdir ───"
-"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" -w "${'$'}USER_HOME" \
-    -b /dev -b /proc -b /sys \
-    /usr/bin/env -i HOME="${'$'}USER_HOME" PATH=/usr/bin:/bin TERM=xterm-256color \
-        /bin/bash --login -c 'echo TEST-E; pwd; env | head -10' 2>&1
-echo "[E] rc=${'$'}?"
+echo "─── [4] proot -r ROOTFS /bin/bash -c 'echo' (NO --login) ───"
+"${'$'}PROOT" -r "${'$'}ROOTFS_DIR" /bin/bash -c 'echo hello-from-bash' 2>&1
+echo "[4] rc=${'$'}?"
+echo
+
+echo "─── [5] /bin/bash létezik a host filesystemen? ───"
+ls -la "${'$'}ROOTFS_DIR/bin/bash" 2>&1
+ls -la "${'$'}ROOTFS_DIR/usr/bin/bash" 2>&1
+echo
+
+echo "─── [6] /lib/ld-linux-aarch64.so.1 (dynamic linker) ───"
+ls -la "${'$'}ROOTFS_DIR/lib" 2>&1
+ls -la "${'$'}ROOTFS_DIR/lib/ld-linux-aarch64.so.1" 2>&1
+ls -la "${'$'}ROOTFS_DIR/usr/lib/ld-linux-aarch64.so.1" 2>&1
 echo
 
 echo "── Diag vége; Android sh drop ──"
