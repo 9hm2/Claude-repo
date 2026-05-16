@@ -179,33 +179,42 @@ fi
 echo "✓ rootfs OK (${'$'}(ls "${'$'}ROOTFS_DIR" | wc -l) toplevel-bejegyzés)"
 echo
 
-# 4) Kali bash indítása proot chroot-on át.
+# 4) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
 #
-# A `-0` (fake-root-uid) flaget SZÁNDÉKOSAN nem használjuk — az upstream
-# proot-me v5.4.0 build-ben silent 255-tel hal el (seccomp/ptrace
-# incompatibilis a -0-szal sok eszközön). A Termux build a `-0`-hoz egy
-# saját kernel-hook patchet visz, de mi az upstreamre építünk.
+# A binárisunk most a Termux fork-ja (fetch-termux-proot.sh-szal letöltve
+# a Termux apt repóból, patchelf-fel Android-compatible névkonvencióra
+# alakítva). Tartalmazza:
+#   --link2symlink  : hardlink→symlink wrap (Android W^X workaround)
+#   --kill-on-exit  : tracee meghal ha proot meghal (zombi-mentes)
+#   --root-id (-0)  : fake-root UID a chrooted scripteknek
+#   --kernel-release: kernel-spoofer (glibc-nek hazudunk modern kernelt)
 #
-# Következmény: a Kali bash non-root UID-vel indul (a host proc UID-je).
-# Apt-install root-kérése `fakeroot`-tal megoldható később, vagy a user
-# explicit `sudo`-zik miután telepítette.
-#
-# A `--link2symlink` is el van hagyva — Termux-szpecifikus extension,
-# upstream proot-me NEM ismeri. A hardlink-okat már Java-szinten
-# symlinkre fallback-eltük (RootfsManager.extractEntry).
+# Bind-mountok a PRoot-Distro mintájára — anélkül a chrooted bash
+# tipikusan elhal /dev/random, /proc/stat, /dev/stdin stb. read-jén.
 echo "─── proot indítása → /bin/bash ───"
 exec "${'$'}PROOT" \
+    --kill-on-exit \
+    --link2symlink \
+    -0 \
+    --kernel-release=5.4.0-fake-kernel \
     -r "${'$'}ROOTFS_DIR" \
+    -w "${'$'}USER_HOME" \
     -b /dev \
     -b /proc \
     -b /sys \
-    -w "${'$'}USER_HOME" \
+    -b /proc/self/fd/0:/dev/stdin \
+    -b /proc/self/fd/1:/dev/stdout \
+    -b /proc/self/fd/2:/dev/stderr \
+    -b /proc/self/fd:/dev/fd \
+    -b /dev/urandom:/dev/random \
+    -b /dev/null:/proc/sys/kernel/cap_last_cap \
     /usr/bin/env -i \
         HOME="${'$'}USER_HOME" \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         TERM="${'$'}{TERM:-xterm-256color}" \
+        TMPDIR=/tmp \
         LANG=C.UTF-8 \
-        /bin/bash -l
+        /bin/bash --login
 
 # Ide csak akkor jutunk, ha az exec proot SIKERTELEN volt.
 echo "✗ HIBA: exec proot sikertelen (${'$'}?)"

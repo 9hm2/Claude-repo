@@ -37,9 +37,16 @@ help:
 	@echo "  make bundle              — mindkettőt ÖSSZESZEDI az out/-ba"
 	@echo "  make clean               — letöltöttek + bundle törlése"
 
-build-proot:
+build-proot: fetch-termux-proot
+
+# Termux pre-built proot fork letöltése (apt repo-ból, patchelf-fel
+# Android jniLibs-kompatibilis névre alakítva). A saját NDK-build
+# (scripts/build-proot.sh, upstream proot-me) az Android-kernel-szpecifikus
+# Termux-patcheket NEM tartalmazza (--link2symlink, --kernel-release,
+# -0 seccomp-workaround), ezért a chrooted proc-ok 255-tel halnak el.
+fetch-termux-proot:
 	@mkdir -p $(DL_DIR)
-	@$(CURDIR)/scripts/build-proot.sh "$(DL_DIR)"
+	@$(CURDIR)/scripts/fetch-termux-proot.sh "$(DL_DIR)"
 
 build-kali-rootfs:
 	@mkdir -p $(DL_DIR)
