@@ -21,7 +21,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── 0. Path filter — meghatározza melyik subprojektet érintette a push
+  # ── 0. Path filter — explicit shell-szkripttel, NEM dorny/paths-filter-rel.
+  # Indok: a dorny/paths-filter @v3 push esemény-nél fail-safe módon **minden
+  # filtert true-ra állít** ha a `github.event.before` nem feloldható
+  # (force-push, shallow checkout, vagy default-branch base). Mi explicit
+  # `git diff BEFORE..AFTER`-rel akarunk dönteni — első push / dispatch
+  # esetén full build, egyébként csak az érintett subprojekt.
   paths:
     runs-on: ubuntu-latest
     outputs:
@@ -30,18 +35,48 @@ jobs:
       app:    ${{ steps.filter.outputs.app }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
         with:
-          filters: |
-            lkl:
-              - 'projects/kernel-build/**'
-            rootfs:
-              - 'projects/kali-rootfs/**'
-            app:
-              - 'projects/kali-term-app/**'
-              - 'projects/usb-bridge/**'
-              - '.github/workflows/kali-term-release.yml'
+          fetch-depth: 0   # git diff BEFORE..AFTER-hoz kell teljes history
+      - id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          BEFORE='${{ github.event.before }}'
+          AFTER='${{ github.sha }}'
+          EVENT='${{ github.event_name }}'
+          echo "EVENT=$EVENT BEFORE=$BEFORE AFTER=$AFTER"
+
+          # workflow_dispatch vagy első push (BEFORE = 40 nulla) → full build.
+          if [[ "$EVENT" == 'workflow_dispatch' ]] \
+             || [[ -z "$BEFORE" ]] \
+             || [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "→ full build (event=$EVENT, before=$BEFORE)"
+            { echo "lkl=true"; echo "rootfs=true"; echo "app=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Megpróbáljuk a BEFORE-ra fetch-elni ha nincs lokálisan.
+          if ! git rev-parse --verify "$BEFORE^{commit}" >/dev/null 2>&1; then
+            git fetch --no-tags --depth=200 origin "$BEFORE" 2>/dev/null || true
+          fi
+          if ! git rev-parse --verify "$BEFORE^{commit}" >/dev/null 2>&1; then
+            echo "→ BEFORE nem reachable → full build (defenzív)"
+            { echo "lkl=true"; echo "rootfs=true"; echo "app=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BEFORE" "$AFTER")
+          echo "── changed files ──"
+          echo "$CHANGED"
+          echo
+
+          lkl=false; rootfs=false; app=false
+          echo "$CHANGED" | grep -qE '^projects/kernel-build/'  && lkl=true    || true
+          echo "$CHANGED" | grep -qE '^projects/kali-rootfs/'   && rootfs=true || true
+          echo "$CHANGED" | grep -qE '^projects/kali-term-app/|^projects/usb-bridge/|^\.github/workflows/kali-term-release\.yml' && app=true || true
+
+          echo "FINAL: lkl=$lkl, rootfs=$rootfs, app=$app"
+          { echo "lkl=$lkl"; echo "rootfs=$rootfs"; echo "app=$app"; } >> "$GITHUB_OUTPUT"
 
   # ── 1. LKL Android Bionic build (csak ha kernel-build/ változott) ────
   lkl-android:
