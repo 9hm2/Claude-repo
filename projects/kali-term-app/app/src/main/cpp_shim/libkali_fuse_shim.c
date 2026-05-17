@@ -686,9 +686,17 @@ int fstat(int fd, struct stat *st)
  * EBADF-fel utasítja vissza, mert nem valódi Linux fd. A libnl/iproute2
  * F_GETFD/F_SETFD/F_GETFL/F_SETFL hívásokat csinál a netlink socket-en —
  * EBADF visszaadás esetén "Cannot send dump request: Bad file descriptor".
- * Cache-elt flag-eket adunk vissza per-fd, ami libnl-nek elég. */
+ * Cache-elt flag-eket adunk vissza per-fd, ami libnl-nek elég.
+ *
+ * KRITIKUS: a `-D_FILE_OFFSET_BITS=64` glibc <fcntl.h> a `fcntl()`-t
+ * `fcntl64`-ként asm-renamel. Az `open`/`openat`-hez hasonlóan explicit
+ * `.globl + .set` direktívákkal a `fcntl` szimbólumot is exportáljuk. */
+int my_fcntl_impl(int fd, int cmd, ...);
+__asm__(".globl fcntl\n\t.set fcntl, my_fcntl_impl");
+__asm__(".globl fcntl64\n\t.set fcntl64, my_fcntl_impl");
+
 static int (*r_fcntl)(int, int, ...) = NULL;
-int fcntl(int fd, int cmd, ...)
+int my_fcntl_impl(int fd, int cmd, ...)
 {
     if (!r_fcntl) r_fcntl = dlsym(RTLD_NEXT, "fcntl");
     /* arg: F_GETFL/F_GETFD nem vesznek argot, F_SETFL/F_SETFD int-et,

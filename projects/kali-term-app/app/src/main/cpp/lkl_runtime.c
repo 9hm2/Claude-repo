@@ -1745,7 +1745,22 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
                 case LIBUSB_SPEED_HIGH:       kernel_speed = 3; break;
                 case LIBUSB_SPEED_SUPER:      kernel_speed = 5; break;
                 case LIBUSB_SPEED_SUPER_PLUS: kernel_speed = 5; break;
-                default:                      kernel_speed = 3; break;  /* fallback */
+                default:
+                    /* UNKNOWN-ra: a bcdUSB descriptor mező alapján döntünk.
+                     * bcdUSB >= 0x0200 → HIGH (USB 2.0+); egyébként FULL.
+                     * Ez biztonságosabb a "mindig HIGH" fallback-nál, mert
+                     * full-speed eszközöknek (FT232R) a bulk-EP maxpacket
+                     * 64 ≠ HS-elvárt 512 → "invalid maxpacket 64" warning. */
+                    {
+                        struct libusb_device_descriptor d2;
+                        if (libusb_get_device_descriptor(libusb_get_device(handle), &d2) == 0
+                            && d2.bcdUSB >= 0x0200) {
+                            kernel_speed = 3;  /* HIGH */
+                        } else {
+                            kernel_speed = 2;  /* FULL — biztonságos fallback */
+                        }
+                    }
+                    break;
                 }
                 APPEND("libusb device speed = %d → kernel USB_SPEED = %d\n",
                        dev_speed, kernel_speed);
