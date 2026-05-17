@@ -1116,3 +1116,55 @@ int udev_monitor_get_fd(struct udev_monitor *m)
     return sp[0];
 }
 struct udev_device *udev_monitor_receive_device(struct udev_monitor *m) { return NULL; /* never */ }
+
+/* ────────────────────────────────────────────────────────────────────
+ *  udev_hwdb — hardware-database API for vendor/product name lookup.
+ *
+ *  A modern usbutils (lsusb v015+) a libudev_hwdb-t használja a VID:PID
+ *  → "Linux Foundation root hub" típusú név-feloldáshoz. A hwdb adatbázis
+ *  a /etc/udev/hwdb.bin fájl — ez normál Linux-on a `systemd-hwdb update`
+ *  generálja a /usr/share/hwdata/usb.ids-ből.
+ *
+ *  Mi nem generálunk hwdb.bin-t (komplex bináris formátum). Helyette:
+ *  - udev_hwdb_new visszaad egy dummy handle-t (siker)
+ *  - get_properties_list_entry NULL-t ad — lsusb fallback-el a device
+ *    saját USB-descriptor 'product'/'manufacturer' string-jeire
+ *
+ *  Eredmény: NINCS 'unable to initialize usb spec' warning, és a
+ *  lsusb a device-saját product-string-jeit használja
+ *  (pl. 'Linux 6.12.0-kaliterm+ vhci_hcd ...').
+ * ──────────────────────────────────────────────────────────────────── */
+struct udev_hwdb;
+
+struct udev_hwdb *udev_hwdb_new(struct udev *u)
+{
+    if (!u) return NULL;
+    struct ku_udev *h = calloc(1, sizeof(*h));
+    if (!h) return NULL;
+    h->refcount = 1;
+    return (struct udev_hwdb *)h;
+}
+
+struct udev_hwdb *udev_hwdb_ref(struct udev_hwdb *h)
+{
+    if (h) ((struct ku_udev *)h)->refcount++;
+    return h;
+}
+
+struct udev_hwdb *udev_hwdb_unref(struct udev_hwdb *h)
+{
+    if (!h) return NULL;
+    struct ku_udev *kh = (struct ku_udev *)h;
+    if (--kh->refcount <= 0) free(kh);
+    return NULL;
+}
+
+/* hwdb lookup egy modalias (pl. "usb:v1D6Bp0002") alapján — listaként
+ * (KEY/VALUE párok) adná a tulajdonságokat. Mi NULL-t (üres) adunk:
+ * a libudev kliens (lsusb) fallback-el a device-natív stringekre. */
+struct udev_list_entry *udev_hwdb_get_properties_list_entry(
+    struct udev_hwdb *h, const char *modalias, unsigned int flags)
+{
+    (void)h; (void)modalias; (void)flags;
+    return NULL;
+}
