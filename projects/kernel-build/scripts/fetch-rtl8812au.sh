@@ -62,6 +62,19 @@ M="${DEST_DIR}/Makefile"
 echo 'EXTRA_CFLAGS += -Daes_encrypt=rtl8812au_aes_encrypt' >> "$M"
 echo "[rtl8812au] Makefile aes_encrypt → rtl8812au_aes_encrypt rename hozzáadva"
 
+# USB ID adminisztráció — a morrownr driver USB ID táblája NEM tartalmazza
+# a felhasználói eszközöket; kibővítjük a felmerülő ID-kkel.
+# 2357:011e = TP-Link Archer T2U Nano / T3U (RTL8811AU vagy RTL8811BU
+# silicon — ha a 8811AU, a meglévő RTL8811 driver-info működik; ha 8811BU,
+# valószínűleg dmesg-ben fail-elni fog, akkor 88x2bu kell külön).
+USB_INTF="${DEST_DIR}/os_dep/linux/usb_intf.c"
+if [[ -f "${USB_INTF}" ]] && ! grep -q '0x011e' "${USB_INTF}"; then
+    # A 0x0101-es sor UTÁN szúrjuk be a saját ID-(k)et — ugyanaz a TP-Link
+    # vendor (0x2357), egyformán RTL8811-driver_info.
+    sed -i '/{USB_DEVICE(0x2357, 0x0101)/a\\t{USB_DEVICE(0x2357, 0x011e), .driver_info = RTL8821}, /* TP-Link Archer T2U/T3U Nano RTL8811AU/8821AU (kaliterm) */' "${USB_INTF}"
+    echo "[rtl8812au] USB ID 2357:011e hozzáadva (TP-Link Archer T2U/T3U → RTL8821 family)"
+fi
+
 # Egyik régen-existed flag-et nyitva hagyjuk; a GCC-13 specifikus
 # csoportot meg cc-option-be wrappel-jük.
 sed -i -E \
