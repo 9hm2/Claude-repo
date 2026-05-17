@@ -9,20 +9,20 @@ Az APK > 100MB → GitHub repo file-limitje miatt 90MB-os darabokra van vágva.
 A telepítéshez először össze kell raknod:
 
 ```bash
-cat kaliterm-debug-3793cac.apk.aa kaliterm-debug-3793cac.apk.ab \
-    > kaliterm-debug-3793cac.apk
-adb install kaliterm-debug-3793cac.apk
+cat kaliterm-debug-beae188.apk.aa kaliterm-debug-beae188.apk.ab \
+    > kaliterm-debug-beae188.apk
+adb install kaliterm-debug-beae188.apk
 ```
 
 Vagy `wget`-tel közvetlenül a telefonra (Termux-ban):
 
 ```bash
-wget https://raw.githubusercontent.com/9hm2/Claude-repo/claude/setup-multi-project-repo-ogjeK/releases/kaliterm-debug-3793cac.apk.aa
-wget https://raw.githubusercontent.com/9hm2/Claude-repo/claude/setup-multi-project-repo-ogjeK/releases/kaliterm-debug-3793cac.apk.ab
-cat kaliterm-debug-3793cac.apk.aa kaliterm-debug-3793cac.apk.ab > kaliterm-debug.apk
+wget https://raw.githubusercontent.com/9hm2/Claude-repo/claude/setup-multi-project-repo-ogjeK/releases/kaliterm-debug-beae188.apk.aa
+wget https://raw.githubusercontent.com/9hm2/Claude-repo/claude/setup-multi-project-repo-ogjeK/releases/kaliterm-debug-beae188.apk.ab
+cat kaliterm-debug-beae188.apk.aa kaliterm-debug-beae188.apk.ab > kaliterm-debug.apk
 ```
 
-## Build-info — kaliterm-debug-3793cac.apk (138 MB)
+## Build-info — kaliterm-debug-beae188.apk (138 MB)
 
 - Commit: `8329deb` (claude/setup-multi-project-repo-ogjeK branch)
 - LKL: liblkl.so 22 MB (stripped, ARM64 Bionic)
