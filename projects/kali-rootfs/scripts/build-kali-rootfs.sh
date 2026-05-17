@@ -155,8 +155,6 @@ ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
         hwdata \
         pciutils \
         firmware-realtek \
-        firmware-atheros \
-        firmware-misc-nonfree \
         net-tools \
         iproute2 \
         kmod \
@@ -165,6 +163,9 @@ ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
         wpasupplicant \
         util-linux \
         rfkill
+        # firmware-atheros (34MB) és firmware-misc-nonfree (4.5MB) KIHAGYVA —
+        # APK 100MB GitHub-limit. A user-nek Realtek 2357:011e device-a van;
+        # ha más chipset firmware kell, apt install firmware-atheros / firmware-misc-nonfree.
 
 echo "[kali] cleanup (qemu, cache, logs)"
 ${SUDO} rm -f  "${ROOTFS_DIR}/usr/bin/qemu-aarch64-static"

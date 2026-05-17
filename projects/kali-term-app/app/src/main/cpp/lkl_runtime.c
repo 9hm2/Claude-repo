@@ -70,6 +70,9 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_NR_socket       198
 #define LKL_NR_socketpair   199
 #define LKL_NR_getdents64    61
+#define LKL_NR_syslog        116      /* syslog(2) — kernel ring-buffer read */
+#define LKL_SYSLOG_READ_ALL  3        /* SYSLOG_ACTION_READ_ALL */
+#define LKL_SYSLOG_SIZE_BUFFER 10     /* query ring buffer size */
 
 #define LKL_AT_FDCWD         (-100)
 #define LKL_O_RDONLY         0
@@ -2016,10 +2019,8 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklReadTree(
  *  ARM64 syscall-számok (asm-generic/unistd.h):
  *    __NR_syslog = 116
  *  SYSLOG_ACTION_READ_ALL = 3
+ *  (Define-ok már fent vannak a fájl-elején, a többi LKL_NR_*-ral együtt.)
  * ──────────────────────────────────────────────────────────────────── */
-#define LKL_NR_syslog       116
-#define LKL_SYSLOG_READ_ALL 3
-#define LKL_SYSLOG_SIZE_BUFFER 10
 
 JNIEXPORT jstring JNICALL
 Java_dev_hm_kaliterm_NativeBridge_nativeLklReadKmsg(JNIEnv *env, jobject thiz)
