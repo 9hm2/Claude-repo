@@ -95,8 +95,36 @@ ${SUDO} cp "${QEMU_BIN}" "${ROOTFS_DIR}/usr/bin/qemu-aarch64-static"
 echo "[kali] debootstrap --second-stage (QEMU-emulated aarch64 chroot)"
 ${SUDO} chroot "${ROOTFS_DIR}" /debootstrap/debootstrap --second-stage
 
-# Pre-konfigurálás: Kali apt-source kiírás már bent van a rootfs-ben
-# (debootstrap kreálta), érintetlen. A user innentől apt-update + install.
+# 6) Sources-list bővítés: alapból CSAK 'main' van; a felhasználói kérésre
+# 'contrib non-free non-free-firmware' is kerüljön bele, hogy firmware-realtek
+# és hasonló non-free csomagok telepíthetők legyenek.
+echo "[kali] sources.list bővítés: main + contrib + non-free + non-free-firmware"
+${SUDO} tee "${ROOTFS_DIR}/etc/apt/sources.list" > /dev/null <<EOF
+# Kali rolling — teljes komponens-lista
+deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmware
+deb-src http://kali.download/kali kali-rolling main contrib non-free non-free-firmware
+EOF
+
+# 7) Pre-installolás: az alaprootfs-be belerakjuk a USB-debug csomagokat,
+# hogy a felhasználónak ne kelljen utólag apt install-olnia.
+#   - usbutils: lsusb (+ libusb-1.0-0 dependency)
+#   - hwdata: usb.ids adatbázis (eltünteti az 'unable to initialize usb spec' warning-ot)
+#   - firmware-realtek: Realtek Wi-Fi/Ethernet chipek firmware-ei (non-free-firmware)
+# A `--no-install-recommends` az APK-méret féken tartására, csak ami szükséges.
+echo "[kali] apt update + install (usbutils, hwdata, firmware-realtek)"
+${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
+    DEBIAN_FRONTEND=noninteractive \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/root \
+    apt-get update
+${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
+    DEBIAN_FRONTEND=noninteractive \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/root \
+    apt-get install -y --no-install-recommends \
+        usbutils \
+        hwdata \
+        firmware-realtek
 
 echo "[kali] cleanup (qemu, cache, logs)"
 ${SUDO} rm -f  "${ROOTFS_DIR}/usr/bin/qemu-aarch64-static"

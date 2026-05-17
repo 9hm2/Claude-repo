@@ -45,7 +45,15 @@ class RootfsManager(private val ctx: Context) {
      *  proot bind-mount-on át jelennek meg a chrootban. */
     val hostInjectionsDir: File = File(ctx.filesDir, "host-injections")
     /** Marker amit a kicsomagolás végén írunk. */
-    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready")
+    /** Ready-marker fájl: a rootfs kibontása után írjuk. A név egy version-suffixet
+     *  tartalmaz; ha új rootfs-buildet hozunk (pl. új csomagokat előinstallálunk),
+     *  a marker-név bump-olásával RÁKÉNYSZERÍTJÜK az appot az új tar.xz
+     *  kibontására (a régi rootfs marker-jét nem találja → re-extract).
+     *
+     *  v2 (2026-05-17): a build-kali-rootfs.sh-ban előre felhúzva:
+     *    - sources.list = main + contrib + non-free + non-free-firmware
+     *    - usbutils + hwdata (full usb.ids) + firmware-realtek pre-installed */
+    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready-v2")
 
     /**
      * A proot binary helye — a `nativeLibraryDir`, NEM a `filesDir`.
@@ -106,7 +114,10 @@ class RootfsManager(private val ctx: Context) {
                 writeResolvConf()
                 writeKaliKeyring()
                 writeFuseShim()
-                writeUsbIdsStub()
+                // writeUsbIdsStub() — TÖRÖLVE: a rootfs most már 'hwdata'-val épül
+                // a build-kali-rootfs.sh-ban, ami a teljes /var/lib/usbutils/usb.ids
+                // (~700KB) adatbázist hozza. Ha a stub bind-mountolódna fölé, az
+                // lsusb vendor-name-feloldás újra eltörne.
                 return null
             }
 
@@ -143,7 +154,7 @@ class RootfsManager(private val ctx: Context) {
             // a /proc, /sys, /dev/bus path-okra hívott libc-funkcók a
             // `:lkl` control-socketen át LKL-syscallt route-olnak.
             writeFuseShim()
-            writeUsbIdsStub()
+            // writeUsbIdsStub() — TÖRÖLVE: a rootfs most már 'hwdata'-val épül.
 
             progressCb?.invoke("kész")
             return null
@@ -330,9 +341,10 @@ if [ -d "${'$'}{HOST_INJECTIONS_DIR}" ]; then
     if [ -f "${'$'}{HOST_INJECTIONS_DIR}/kali-archive-keyring.gpg" ]; then
         INJECT_ARGS="${'$'}{INJECT_ARGS} -b ${'$'}{HOST_INJECTIONS_DIR}/kali-archive-keyring.gpg:/etc/apt/trusted.gpg.d/kali-archive-keyring.gpg"
     fi
-    if [ -f "${'$'}{HOST_INJECTIONS_DIR}/usb.ids" ]; then
-        INJECT_ARGS="${'$'}{INJECT_ARGS} -b ${'$'}{HOST_INJECTIONS_DIR}/usb.ids:/var/lib/usbutils/usb.ids"
-    fi
+    # usb.ids bind-mount TÖRÖLVE: a rootfs maga most már a 'hwdata'
+    # csomag teljes /var/lib/usbutils/usb.ids-jét tartalmazza (~700KB).
+    # Ha bind-mountolnánk fölé a 60-byte stubot, az lsusb vendor-feloldás
+    # újra eltörne. A rootfs-szintű usb.ids elegendő.
     if [ -f "${'$'}{HOST_INJECTIONS_DIR}/resolv.conf" ]; then
         INJECT_ARGS="${'$'}{INJECT_ARGS} -b ${'$'}{HOST_INJECTIONS_DIR}/resolv.conf:/etc/resolv.conf"
     fi
