@@ -33,9 +33,16 @@ fi
 echo "[fetch] kész: ${SRC_DIR}"
 ls "${SRC_DIR}/tools/lkl" >/dev/null  # sanity check: LKL fa
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Out-of-tree driverek beágyazása a kernel-tree-be a patch-fázis ELŐTT,
+# hogy a patches/ a parent Makefile/Kconfig hivatkozásait felülírhassa.
+# Jelenleg: morrownr/8812au-20210820 — RTL8812AU/8821AU/8811AU/8814AU
+# (2357:011e TP-Link Archer T2U Plus, Alfa AWUS036ACH, stb.).
+"${SCRIPT_DIR}/fetch-rtl8812au.sh" "${SRC_DIR}"
+
 # Helyi patch-ek alkalmazása (idempotens: `patch -N` ugorja a már alkalmazottakat).
 # A patch outputja LÁTHATÓ marad — CI-debugban kulcs hogy melyik hunk hová ment.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCHES_DIR="${SCRIPT_DIR}/../patches"
 if [[ -d "${PATCHES_DIR}" ]]; then
     shopt -s nullglob
