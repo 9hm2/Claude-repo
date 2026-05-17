@@ -863,10 +863,10 @@ int socket(int domain, int type, int protocol)
         SHIM_DBG("[shim socket] fake udev netlink fd=%d\n", sp[0]);
         return sp[0];
     }
-    if (domain == AF_NETLINK && protocol == NETLINK_GENERIC) {
-        /* nl80211/cfg80211 → LKL-route a control-socketen át.
-         * Dedikált sock-kapcsolat per netlink-fd, hogy a parallel send/recv
-         * műveletek ne ütközzenek más LKL-clientekkel. */
+    /* MINDEN AF_NETLINK protokoll (kivéve UEVENT/KOBJECT amit fent fake-elünk)
+     * → LKL kernel netlink stack. NETLINK_ROUTE (proto 0) = ifconfig/ip/route,
+     * NETLINK_GENERIC (16) = iw/nl80211, NETLINK_NETFILTER (12), stb. */
+    if (domain == AF_NETLINK) {
         int sock = sock_connect();
         if (sock < 0) {
             SHIM_DBG("[shim socket NL_GENERIC] sock_connect fail → real\n");
