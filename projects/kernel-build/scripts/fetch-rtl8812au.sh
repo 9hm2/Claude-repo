@@ -40,12 +40,15 @@ git checkout --detach "${DRIVER_COMMIT}"
 echo "[rtl8812au] commit pinned: $(git rev-parse HEAD)"
 cd - >/dev/null
 
+rm -rf "${DEST_DIR}"
 mkdir -p "${DEST_DIR}"
-# Forrás-másolás: .git nélkül, .gitignore-okat kihagyva
-rsync -a --delete \
-    --exclude='.git/' --exclude='.github/' --exclude='*.ko' --exclude='*.o' \
-    --exclude='.tmp_versions/' --exclude='Module.symvers' \
-    "${CACHE_DIR}/" "${DEST_DIR}/"
+# Forrás-másolás tar-pipe-pal (rsync nem mindenhol elérhető CI-runner-en).
+# .git/ + .github/ + .ko/.o build artifact-ok kihagyva.
+( cd "${CACHE_DIR}" && tar -cf - \
+    --exclude='.git' --exclude='.github' \
+    --exclude='*.ko' --exclude='*.o' \
+    --exclude='.tmp_versions' --exclude='Module.symvers' \
+    . ) | ( cd "${DEST_DIR}" && tar -xf - )
 
 # Toolchain-kompatibilitás: az upstream Makefile GCC-13-specifikus warning-
 # disable flag-eket ad hozzá unconditionally, amit a NDK clang `-Werror`
