@@ -1064,13 +1064,19 @@ static struct {
 static void ctrl_handle_command(int conn, char *line)
 {
     char op[16];
-    /* op:1st token */
+    /* op:1st token. Néhány parancs argumentum nélküli (pl. KMSG) — ilyenkor
+     * a teljes line a op, és rest="" (üres). A space-csekk nem fail-elhet
+     * ezekért. */
     char *sp = strchr(line, ' ');
-    if (!sp) { write(conn, "ERR badcmd\n", 11); return; }
-    *sp = 0;
-    strncpy(op, line, sizeof(op) - 1);
-    op[sizeof(op) - 1] = 0;
-    char *rest = sp + 1;
+    if (sp) {
+        *sp = 0;
+        strncpy(op, line, sizeof(op) - 1);
+        op[sizeof(op) - 1] = 0;
+    } else {
+        strncpy(op, line, sizeof(op) - 1);
+        op[sizeof(op) - 1] = 0;
+    }
+    char *rest = sp ? (sp + 1) : (char *)"";
 
     if (strcmp(op, "OPEN") == 0) {
         char *space2 = strchr(rest, ' ');
