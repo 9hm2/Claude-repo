@@ -296,22 +296,7 @@ class KaliShellService : Service() {
         return count
     }
 
-    companion object {
-        private val DEFAULT_SKIP_NAMES = setOf(
-            // sysfs symlink-loop
-            "subsystem", "driver", "module", "of_node",
-            // /proc/<PID>-szintű link-ek
-            "cwd", "exe", "root", "fd", "fdinfo", "task",
-            // /sys/kernel/slab — több ezer slab-cache, fölösleges chrootnak
-            "slab", "cache",
-            // /sys/devices/*/power — runtime-PM állapotok, kvázi-explosion
-            "power",
-            // /sys/firmware/efi — UEFI-state, nem releváns
-            "efi",
-            // /proc-szinten thread-self és self host-overlay-jel kezelve
-            "self", "thread-self",
-        )
-    }
+    // Companion object alább a fájl végén (merge-elve a NOTIF_* konstansokkal).
 
     private fun populateLklProcMirror(rootfs: RootfsManager): String? {
         // Bind-el ha még nincs. ELŐSZÖR startForegroundService — ezzel STARTED
@@ -502,6 +487,27 @@ class KaliShellService : Service() {
         return osrelease
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        Log.i(tag, "onCreate")
+        // Foreground promote — Samsung BBA (Background Activity Auto-Control)
+        // aggresszív killer-rel a main process pár sec alatt meghal a háttérben.
+        // KaliShellService nélkül a TerminalSession (bash process) is dies a main
+        // halálával, és a user a back-előrelépésnél új shell-t kell hogy lásson
+        // (state-vesztés). Ezzel viszont a service és benne a session is él
+        // amíg explicit Stop nincs.
+        ensureNotificationChannel()
+        try {
+            startForeground(NOTIF_ID, buildNotification())
+        } catch (t: Throwable) {
+            Log.w(tag, "startForeground hiba: ${t.message}")
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY
+    }
+
     override fun onBind(intent: Intent?): IBinder {
         Log.i(tag, "onBind")
         return LocalBinder()
@@ -509,8 +515,85 @@ class KaliShellService : Service() {
 
     override fun onDestroy() {
         Log.i(tag, "onDestroy — session terminate")
+        // KRITIKUS leak-fix: a populateLklProcMirror által bindelt lklConn-t
+        // unbind-elni KELL itt, különben ServiceConnectionLeaked exception
+        // a logcat-ban + Android tracking-resource holding.
+        if (lklIface != null) {
+            try { unbindService(lklConn) } catch (t: Throwable) {
+                Log.w(tag, "lklConn unbind hiba: ${t.message}")
+            }
+            lklIface = null
+        }
         try { session?.finishIfRunning() } catch (_: Throwable) {}
         session = null
         super.onDestroy()
+    }
+
+    private fun ensureNotificationChannel() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            if (nm.getNotificationChannel(NOTIF_CHANNEL_ID) == null) {
+                val ch = android.app.NotificationChannel(
+                    NOTIF_CHANNEL_ID,
+                    "Kali shell session",
+                    android.app.NotificationManager.IMPORTANCE_LOW,
+                ).apply {
+                    description = "Az aktív Kali shell session életben tartása."
+                    setShowBadge(false)
+                }
+                nm.createNotificationChannel(ch)
+            }
+        }
+    }
+
+    private fun buildNotification(): android.app.Notification {
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val piFlags = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M)
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        else
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        val pi = android.app.PendingIntent.getActivity(this, 1, openIntent, piFlags)
+
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            android.app.Notification.Builder(this, NOTIF_CHANNEL_ID)
+                .setContentTitle("Kali shell session")
+                .setContentText("Bash session él a háttérben (proot+LKL)")
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            android.app.Notification.Builder(this)
+                .setContentTitle("Kali shell session")
+                .setContentText("Bash session él a háttérben")
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .setPriority(android.app.Notification.PRIORITY_LOW)
+                .build()
+        }
+    }
+
+    companion object {
+        private const val NOTIF_CHANNEL_ID = "kaliterm-shell"
+        private const val NOTIF_ID = 4712
+
+        private val DEFAULT_SKIP_NAMES = setOf(
+            // sysfs symlink-loop
+            "subsystem", "driver", "module", "of_node",
+            // /proc/<PID>-szintű link-ek
+            "cwd", "exe", "root", "fd", "fdinfo", "task",
+            // /sys/kernel/slab — több ezer slab-cache, fölösleges chrootnak
+            "slab", "cache",
+            // /sys/devices/*/power — runtime-PM állapotok, kvázi-explosion
+            "power",
+            // /sys/firmware/efi — UEFI-state, nem releváns
+            "efi",
+            // /proc-szinten thread-self és self host-overlay-jel kezelve
+            "self", "thread-self",
+        )
     }
 }

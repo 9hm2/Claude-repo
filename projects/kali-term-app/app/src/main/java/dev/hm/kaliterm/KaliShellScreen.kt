@@ -105,11 +105,21 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
                 binder = null
             }
         }
-        ctx.bindService(
-            Intent(ctx, KaliShellService::class.java),
-            conn,
-            Context.BIND_AUTO_CREATE,
-        )
+        val shellIntent = Intent(ctx, KaliShellService::class.java)
+        // startForegroundService + bindService — a service-t STARTED+BOUND
+        // állapotba tesszük. A Samsung BBA (Background Activity Auto-Control)
+        // ezt nem killeli az activity halálával együtt, így a TerminalSession
+        // (bash process) életben marad háttérben is.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                ctx.startForegroundService(shellIntent)
+            } else {
+                ctx.startService(shellIntent)
+            }
+        } catch (t: Throwable) {
+            Log.w("kaliterm-shell", "startForegroundService failed: ${t.message}")
+        }
+        ctx.bindService(shellIntent, conn, Context.BIND_AUTO_CREATE)
         onDispose {
             try {
                 binder?.setListener(null)
