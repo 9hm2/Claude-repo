@@ -929,11 +929,15 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
 {
     INIT(setsockopt);
-    /* MINDEN setsockopt LKL-routed magic-fd-re LKL-be küldjük át —
-     * NEM csak a SOL_NETLINK-szintűek. iproute2/libnl SO_SNDBUF /
-     * SO_RCVBUF (SOL_SOCKET) hívás-okat is csinál, és ezek a magic_fd
-     * (nincs valódi Android-fd) miatt EBADF-fel hasalnak el. */
     if (is_nl_fd(sockfd)) {
+        /* SOL_NETLINK-szintű opciók (NETLINK_ADD_MEMBERSHIP, NETLINK_PKTINFO,
+         * stb.) → LKL-be route. A SOL_SOCKET-szintű hint-eket (SO_SNDBUF,
+         * SO_RCVBUF, SO_PASSCRED, stb.) csendesen accept-eljük — libnl/iw
+         * ezek hibájával NEM számol, és az LKL non-priv namespace gyakran
+         * EPERM-mel utasítaná el → "ip link" / "iw dev" elhasalna. */
+        if (level != SOL_NETLINK) {
+            return 0;
+        }
         struct nl_slot *s = get_nl(sockfd);
         if (!s) { errno = EBADF; return -1; }
         if (optlen > 256) { errno = EINVAL; return -1; }
@@ -948,9 +952,9 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
         if (read_line(s->sock, resp, sizeof(resp)) <= 0) { errno = EIO; return -1; }
         if (strncmp(resp, "OK", 2) == 0) return 0;
         int err = 0; sscanf(resp, "ERR errno=%d", &err);
-        /* Egyes opciók (pl. SO_SNDBUF query a non-priv namespace-ben) az LKL
-         * kernel-ben sem stricly-required-ek — ha hibázik, no-op. */
-        if (err == ENOPROTOOPT || err == EINVAL) return 0;
+        /* Még a SOL_NETLINK opciókra is megengedőek vagyunk — a NETLINK_*
+         * tagsági opciók néha non-fatal-ak az LKL-ben. */
+        if (err == ENOPROTOOPT || err == EINVAL || err == EPERM) return 0;
         errno = err ? err : EIO;
         return -1;
     }
