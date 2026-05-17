@@ -73,11 +73,21 @@ class LklController(private val context: Context) {
     fun bind() {
         if (iface != null) return
         Log.i(tag, "bind() — :lkl process spawn-olása")
-        context.bindService(
-            Intent(context, LklService::class.java),
-            conn,
-            Context.BIND_AUTO_CREATE,
-        )
+        val intent = Intent(context, LklService::class.java)
+        // KRITIKUS: startForegroundService MIELŐTT bindService. A `startForeground`
+        // hívás (a Service oldalán) csak akkor "ragad rajta" a service-en, ha az
+        // STARTED állapotba kerül. Csak bindService → bind-release-kor a foreground
+        // promóció eltűnik, és a :lkl process meghal a kernel state-tel együtt.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (t: Throwable) {
+            Log.w(tag, "startForegroundService failed: ${t.message}")
+        }
+        context.bindService(intent, conn, Context.BIND_AUTO_CREATE)
     }
 
     fun unbind() {
