@@ -38,6 +38,9 @@
 #include <sys/un.h>
 #include <sys/time.h>
 #include <sys/select.h>
+#include <sys/vfs.h>
+#include <sys/statfs.h>
+#include <linux/magic.h>
 #include <linux/netlink.h>
 #include <dirent.h>
 
@@ -576,6 +579,65 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
     }
     return r_setsockopt(sockfd, level, optname, optval, optlen);
 }
+
+/* statfs() override — libusb a sysfs jelenlétét úgy ellenőrzi, hogy
+ * statfs(/sys, ...) → f_type == SYSFS_MAGIC. A proot bind-mountolt /sys
+ * azonban a host ext4/f2fs filesystemén van (EXT4_SUPER_MAGIC) → libusb
+ * "sysfs not mounted" warningot ad, és a teljes USB-enumeráció elszáll.
+ *
+ * Fake-eljük a typical /proc /sys /dev path-okra a megfelelő MAGIC-et.
+ * A többi mezőt (f_blocks, f_files, stb.) a valódi statfs() hívás után
+ * megtartjuk — csak az f_type értékét írjuk át. */
+#ifndef SYSFS_MAGIC
+#define SYSFS_MAGIC      0x62656572
+#endif
+#ifndef PROC_SUPER_MAGIC
+#define PROC_SUPER_MAGIC 0x9fa0
+#endif
+#ifndef TMPFS_MAGIC
+#define TMPFS_MAGIC      0x01021994
+#endif
+#ifndef DEVPTS_SUPER_MAGIC
+#define DEVPTS_SUPER_MAGIC 0x1cd1
+#endif
+
+static int (*r_statfs)(const char *, struct statfs *) = NULL;
+
+/* Egy path-prefix-match a tipikus virtual-FS gyökerekre. Visszatérési érték:
+ * a megfelelő MAGIC vagy 0 ha a path nem érdekes (valódi statfs eredmény marad). */
+static long fake_fs_magic_for_path(const char *path)
+{
+    if (!path) return 0;
+    if (path[0] != '/') return 0;
+    /* "/sys" vagy "/sys/..." */
+    if (strncmp(path, "/sys", 4) == 0 && (path[4] == '\0' || path[4] == '/'))
+        return SYSFS_MAGIC;
+    /* "/proc" vagy "/proc/..." */
+    if (strncmp(path, "/proc", 5) == 0 && (path[5] == '\0' || path[5] == '/'))
+        return PROC_SUPER_MAGIC;
+    /* "/dev/pts" — devpts elsőbbség */
+    if (strncmp(path, "/dev/pts", 8) == 0 && (path[8] == '\0' || path[8] == '/'))
+        return DEVPTS_SUPER_MAGIC;
+    /* "/dev" — devtmpfs/tmpfs */
+    if (strncmp(path, "/dev", 4) == 0 && (path[4] == '\0' || path[4] == '/'))
+        return TMPFS_MAGIC;
+    return 0;
+}
+
+int statfs(const char *path, struct statfs *buf)
+{
+    INIT(statfs);
+    int rc = r_statfs(path, buf);
+    if (rc == 0 && buf) {
+        long magic = fake_fs_magic_for_path(path);
+        if (magic != 0) {
+            buf->f_type = (typeof(buf->f_type))magic;
+        }
+    }
+    return rc;
+}
+
+/* statfs64 = statfs az aarch64-en (LP64), nem kell külön override */
 
 /* Constructor — minden indításkor stderr-re log (egyszerű diag). */
 __attribute__((constructor))
