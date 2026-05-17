@@ -265,6 +265,20 @@ class KaliShellService : Service() {
         override fun onServiceDisconnected(name: android.content.ComponentName?) {
             Log.i(tag, "LklService disconnect")
             lklIface = null
+            // KRITIKUS: ha a :lkl process meghalt (pl. lkl.stop killProcess-tel),
+            // a cached TerminalSession-en lévő PFD-k (PTY master) DEAD lesznek
+            // — minden read/write EBADF-fel hasal el. Invalidáljuk a cache-t,
+            // hogy a következő getOrCreateSession ÚJ session-t hozzon létre
+            // egy frissen-induló :lkl process-szel.
+            session?.let {
+                Log.i(tag, "session invalidálás (LKL disconnect) — új :lkl-hez új TerminalSession")
+                runCatching { it.finishIfRunning() }
+                session = null
+            }
+            // A /proc + /sys mirror cache is dirty — a NEW :lkl-nek új PID-ek,
+            // új osrelease (esetleg), új USB enumerálás.
+            lklProcOsrelease = null
+            mirrorCacheDirty = true
         }
     }
 
