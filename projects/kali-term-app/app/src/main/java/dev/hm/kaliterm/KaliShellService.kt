@@ -164,9 +164,20 @@ class KaliShellService : Service() {
             // Cache-fix: a LaunchedEffect(binder, ready) kétszer triggerelődhet
             // (binder és ready változás). Ha már sikerült populálni, NE
             // walkoljuk újra az LKL-t — 600ms-1s felesleges munka lenne.
+            // FONTOS: a foreground service is megtarthat egy elavult cache-t
+            // egy APK-upgrade UTÁN, ha a service nem destroy-olódott. Ezért
+            // a sentinel-fájl content-check ha a kritikus usb1/busnum üres,
+            // ÚJRA-RUN-oljuk a populate-et.
             if (lklProcOsrelease != null) {
-                KaliInitLog.add("shell-svc", "prepareLklMirror skip — cached osrelease=$lklProcOsrelease")
-                return
+                val sentinel = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
+                val ok = sentinel.exists() && sentinel.length() > 0
+                if (ok) {
+                    KaliInitLog.add("shell-svc", "prepareLklMirror skip — cached osrelease=$lklProcOsrelease (sentinel OK)")
+                    return
+                } else {
+                    KaliInitLog.add("shell-svc", "cache invalid (usb1/busnum üres) — RE-POPULATE")
+                    lklProcOsrelease = null
+                }
             }
             lklProcOsrelease = populateLklProcMirror(rootfs)
         }
@@ -444,6 +455,21 @@ class KaliShellService : Service() {
         File(sysMirror, "devices/platform/vhci_hcd.0").list()?.let {
             KaliInitLog.add("diag", "vhci_hcd.0 (${it.size}): ${it.take(15).joinToString(", ")}")
         } ?: KaliInitLog.add("diag", "vhci_hcd.0 NINCS — vhci_hcd init nem futott le?")
+
+        // Byte-szintű ellenőrzés: a kritikus sysfs-attribútumokat az lsusb
+        // VALÓBAN olvassa. Ha üres a fájl, lsusb skip-eli a device-t.
+        fun dumpFile(label: String, rel: String) {
+            val f = File(sysMirror, rel)
+            val content = if (f.exists()) f.readText().trim().take(60) else "(missing)"
+            KaliInitLog.add("diag", "$label = '$content' (${f.length()}B)")
+        }
+        dumpFile("usb1/busnum",      "bus/usb/devices/usb1/busnum")
+        dumpFile("usb1/devnum",      "bus/usb/devices/usb1/devnum")
+        dumpFile("usb1/idVendor",    "bus/usb/devices/usb1/idVendor")
+        dumpFile("usb1/idProduct",   "bus/usb/devices/usb1/idProduct")
+        dumpFile("usb1/descriptors", "bus/usb/devices/usb1/descriptors")
+        dumpFile("1-1/busnum",       "bus/usb/devices/1-1/busnum")
+        dumpFile("1-1/idVendor",     "bus/usb/devices/1-1/idVendor")
         // /sys/bus/usb/devices/usb1 stub — proot bind később (csak ha LKL
         // valódi root-hub-bejegyzéssel rendelkezik).
 
