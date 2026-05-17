@@ -97,6 +97,7 @@ class RootfsManager(private val ctx: Context) {
                 writeResolvConf()
                 writeKaliKeyring()
                 writeFuseShim()
+                writeUsbIdsStub()
                 return null
             }
 
@@ -133,6 +134,7 @@ class RootfsManager(private val ctx: Context) {
             // a /proc, /sys, /dev/bus path-okra hívott libc-funkcók a
             // `:lkl` control-socketen át LKL-syscallt route-olnak.
             writeFuseShim()
+            writeUsbIdsStub()
 
             progressCb?.invoke("kész")
             return null
@@ -336,6 +338,24 @@ echo "✗ HIBA: exec proot sikertelen (${'$'}?)"
 echo "Drop to Android sh."
 exec /system/bin/sh
 """
+
+    /** Minimális usb.ids stub a /var/lib/usbutils/-ben, hogy az lsusb
+     *  `unable to initialize usb spec` üzenetet NE adja. A teljes usb.ids
+     *  ~700KB (Linux USB ID adatbázis); itt csak egy üres stubot adunk,
+     *  hogy a fopen() siker legyen. A user `apt install hwdata` után
+     *  a teljes adatbázist kapja meg. */
+    private fun writeUsbIdsStub() {
+        try {
+            val target = File(rootfsDir, "var/lib/usbutils/usb.ids")
+            if (target.exists() && target.length() > 100) return  // van valami nagyobb file, ne írjuk felül
+            target.parentFile?.mkdirs()
+            target.writeText("# Minimal usb.ids stub — install 'hwdata' for full database\n")
+            Os.chmod(target.absolutePath, "644".toInt(8))
+            Log.i(tag, "usb.ids stub kiírva: ${target.absolutePath}")
+        } catch (t: Throwable) {
+            Log.w(tag, "writeUsbIdsStub failed: ${t.message}")
+        }
+    }
 
     /** libkali_fuse_shim.so beágyazása a chrooted /usr/lib-be, LD_PRELOAD-ra
      *  készen. Az APK assets/rootfs/libkali_fuse_shim.so-jét másoljuk. */

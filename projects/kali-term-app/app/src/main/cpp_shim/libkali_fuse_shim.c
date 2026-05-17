@@ -526,6 +526,20 @@ static int (*r_setsockopt)(int, int, int, const void *, socklen_t) = NULL;
 #define SOL_NETLINK 270
 #endif
 
+/* DEBUG mód env-flag-re: a stderr-üzenetek alapból CSENDESEK, hogy
+ * ne keveredjenek a Kali programok normál outputjába (pl. lsusb-ben).
+ * Bekapcsolható: KALITERM_SHIM_DEBUG=1 a launch.sh env-jében. */
+static int shim_dbg_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("KALITERM_SHIM_DEBUG");
+        cached = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return cached;
+}
+#define SHIM_DBG(...) do { if (shim_dbg_enabled()) fprintf(stderr, __VA_ARGS__); } while (0)
+
 int socket(int domain, int type, int protocol)
 {
     INIT(socket);
@@ -534,7 +548,7 @@ int socket(int domain, int type, int protocol)
         if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) < 0) return -1;
         /* a peer-vég (sp[1]) sosem ad data-t → recvmsg blocked-marad,
          * de NEM fail-el. A libusb init OK. */
-        fprintf(stderr, "[shim socket] fake netlink fd=%d\n", sp[0]);
+        SHIM_DBG("[shim socket] fake netlink fd=%d\n", sp[0]);
         return sp[0];
     }
     return r_socket(domain, type, protocol);
@@ -546,7 +560,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
     INIT(bind);
     if (addr && addr->sa_family == AF_NETLINK) {
-        fprintf(stderr, "[shim bind] AF_NETLINK fd=%d → no-op (OK)\n", sockfd);
+        SHIM_DBG("[shim bind] AF_NETLINK fd=%d → no-op (OK)\n", sockfd);
         return 0;
     }
     return r_bind(sockfd, addr, addrlen);
@@ -567,5 +581,5 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
 __attribute__((constructor))
 static void shim_init(void)
 {
-    fprintf(stderr, "[kali-fuse-shim] LD_PRELOAD aktív (sock=%s)\n", SOCK_PATH);
+    SHIM_DBG("[kali-fuse-shim] LD_PRELOAD aktív (sock=%s)\n", SOCK_PATH);
 }

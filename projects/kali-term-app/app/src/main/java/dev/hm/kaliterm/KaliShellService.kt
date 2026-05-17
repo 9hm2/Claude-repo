@@ -161,6 +161,13 @@ class KaliShellService : Service() {
          */
         @Synchronized
         fun prepareLklMirror(rootfs: RootfsManager) {
+            // Cache-fix: a LaunchedEffect(binder, ready) kétszer triggerelődhet
+            // (binder és ready változás). Ha már sikerült populálni, NE
+            // walkoljuk újra az LKL-t — 600ms-1s felesleges munka lenne.
+            if (lklProcOsrelease != null) {
+                KaliInitLog.add("shell-svc", "prepareLklMirror skip — cached osrelease=$lklProcOsrelease")
+                return
+            }
             lklProcOsrelease = populateLklProcMirror(rootfs)
         }
 
@@ -404,6 +411,19 @@ class KaliShellService : Service() {
         tt = System.currentTimeMillis()
         val devHit  = materializeLklTree(iface, "/dev",  devMirror,  maxDepth = 3, maxPerDir = 64)
         KaliInitLog.add("shell-svc", "/dev materalizálva: $devHit entry (${System.currentTimeMillis()-tt}ms)")
+
+        // libusb 'sysfs not mounted' fix — explicit garantáljuk a kritikus
+        // /sys/bus/usb/devices és /sys/class/usbmisc directory létezését.
+        // Akkor is létrejön, ha az LKL kernel-konfig USB-mentes (üres,
+        // de létezik → libusb `open(..., O_DIRECTORY)` siker).
+        listOf("bus/usb/devices", "bus/usb/drivers", "bus/hid/devices",
+               "class/usb", "class/usbmisc", "class/hidraw", "class/tty",
+               "class/net", "class/input", "class/block",
+               "devices/virtual").forEach {
+            File(sysMirror, it).mkdirs()
+        }
+        // /sys/bus/usb/devices/usb1 stub — proot bind később (csak ha LKL
+        // valódi root-hub-bejegyzéssel rendelkezik).
 
         // libusb-related extra fájlok ami az LKL devtmpfs-ben nem mindig
         // jelennek meg (Android dev /dev/bus/usb-jét magunk pótoljuk
