@@ -628,16 +628,22 @@ int statfs(const char *path, struct statfs *buf)
 {
     INIT(statfs);
     int rc = r_statfs(path, buf);
-    if (rc == 0 && buf) {
-        long magic = fake_fs_magic_for_path(path);
-        if (magic != 0) {
-            buf->f_type = (typeof(buf->f_type))magic;
-        }
+    long magic = fake_fs_magic_for_path(path);
+    /* UNCONDITIONAL debug print — diagnosztika a libusb 'sysfs not mounted'
+     * problémához. Ha ez a sor a stderr-ben látható lsusb futtatáskor,
+     * a statfs override működik. Ha nem, libusb a syscall()-t direkten
+     * használja vagy statvfs-t (POSIX) hív. */
+    fprintf(stderr, "[shim statfs] path=%s rc=%d magic_override=0x%lx\n",
+            path ? path : "(null)", rc, magic);
+    if (rc == 0 && buf && magic != 0) {
+        buf->f_type = (typeof(buf->f_type))magic;
     }
     return rc;
 }
 
-/* statfs64 = statfs az aarch64-en (LP64), nem kell külön override */
+/* aarch64-linux-gnu glibc-ben a statfs64() __asm__("statfs")-tal aliasolt
+ * → ugyanaz a szimbólum mint a statfs(). Külön definíció duplicate-symbol
+ * linker errort okoz. A statfs() override mindkettőt elkapja. */
 
 /* Constructor — minden indításkor stderr-re log (egyszerű diag). */
 __attribute__((constructor))
