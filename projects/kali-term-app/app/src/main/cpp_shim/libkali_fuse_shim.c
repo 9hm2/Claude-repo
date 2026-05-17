@@ -298,9 +298,28 @@ static void free_slot(int fd)
 
 /* ────────────────────────────────────────────────────────────────────
  *  open()/openat()
+ *
+ *  KRITIKUS: a `-D_FILE_OFFSET_BITS=64` glibc header miatt a `<fcntl.h>`
+ *  `extern int open() __asm__("open64")` rename-t használ. A C-szintű
+ *  `__attribute__((alias))` HATÁSTALAN — a compiler az asm-rename-elt
+ *  névre rakja az aliast (open → open64).
+ *
+ *  Megoldás: file-scope `__asm__`-ban közvetlenül emittáljuk a `.global`
+ *  és `.set` direktívákat, ami a linker-szintű szimbólum-táblába kerül
+ *  bypass-olva a C-szintű renaming-et. Így MIND a `open`/`openat`, MIND
+ *  a `open64`/`openat64` szimbólumok exportálódnak, mind a my_open_impl /
+ *  my_openat_impl-re mutatva.
  * ──────────────────────────────────────────────────────────────────── */
+int my_open_impl(const char *path, int flags, ...);
+int my_openat_impl(int dirfd, const char *path, int flags, ...);
 
-int open(const char *path, int flags, ...)
+/* Linker-szintű alias-ok — bypass-olja a glibc asm-rename-et */
+__asm__(".globl open\n\t.set open, my_open_impl");
+__asm__(".globl openat\n\t.set openat, my_openat_impl");
+__asm__(".globl open64\n\t.set open64, my_open_impl");
+__asm__(".globl openat64\n\t.set openat64, my_openat_impl");
+
+int my_open_impl(const char *path, int flags, ...)
 {
     INIT(open);
     mode_t mode = 0;
@@ -351,7 +370,7 @@ int open(const char *path, int flags, ...)
     return -1;
 }
 
-int openat(int dirfd, const char *path, int flags, ...)
+int my_openat_impl(int dirfd, const char *path, int flags, ...)
 {
     INIT(openat);
     mode_t mode = 0;
@@ -361,7 +380,7 @@ int openat(int dirfd, const char *path, int flags, ...)
     }
     /* Csak az abszolút path-t LKL-routol; relatív path-t a real-libc */
     if (path && path[0] == '/' && is_lkl_path(path)) {
-        return open(path, flags, mode);
+        return my_open_impl(path, flags, mode);
     }
     int rc = r_openat(dirfd, path, flags, mode);
     if (path && is_virt_fs_path(path))
