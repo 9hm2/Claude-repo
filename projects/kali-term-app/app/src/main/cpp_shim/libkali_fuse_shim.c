@@ -36,6 +36,8 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
+#include <linux/netlink.h>
 #include <dirent.h>
 
 #define SOCK_PATH "/run/lkl-control.sock"
@@ -265,33 +267,58 @@ int close(int fd)
  *  stat / lstat / fstat — minimal placeholder mode-okra
  * ──────────────────────────────────────────────────────────────────── */
 
-/* Az LKL-szerveren a STAT-protokollt majd implementáljuk; addig egy
- * minimal-fake-stat-tal felelünk (regular file, mode 0644). A libc-eljárások
- * (sysfs-attribute-read) ennyivel megelégszenek a `cat /proc/...` szintű
- * használathoz. A `lsusb` libusb sysfs-back-endje részletes stat-ot vár,
- * arra a TODO-listán.  */
+/* Valódi STAT az LKL-control-socketen — `lkl_sys_newfstatat` mögöttes hívás.
+ * Fallback fake-stat ha a socket-kapcsolat nem megy (dead :lkl process). */
 static int fake_stat_lkl(const char *path, struct stat *st)
 {
     memset(st, 0, sizeof(*st));
     st->st_mode = S_IFREG | 0644;
     st->st_nlink = 1;
-    st->st_size = 0;
-    st->st_uid = 0;
-    st->st_gid = 0;
     return 0;
+}
+
+static int lkl_stat_real(const char *path, struct stat *st)
+{
+    int sock = sock_connect();
+    if (sock < 0) return fake_stat_lkl(path, st);
+    char req[1280];
+    int n = snprintf(req, sizeof(req), "STAT %s\n", path);
+    if (write(sock, req, n) != n) { close(sock); return fake_stat_lkl(path, st); }
+    char resp[160];
+    if (read_line(sock, resp, sizeof(resp)) <= 0) {
+        close(sock); return fake_stat_lkl(path, st);
+    }
+    close(sock);
+    unsigned int mode = 0;
+    long size = 0;
+    unsigned long ino = 0;
+    if (sscanf(resp, "OK mode=%u size=%ld ino=%lu", &mode, &size, &ino) == 3) {
+        memset(st, 0, sizeof(*st));
+        st->st_mode = (mode_t)mode;
+        st->st_size = (off_t)size;
+        st->st_ino = (ino_t)ino;
+        st->st_nlink = 1;
+        st->st_blksize = 4096;
+        st->st_blocks = (size + 511) / 512;
+        return 0;
+    }
+    int err = 0;
+    sscanf(resp, "ERR errno=%d", &err);
+    errno = err ? err : ENOENT;
+    return -1;
 }
 
 int stat(const char *path, struct stat *st)
 {
     INIT(stat);
-    if (is_lkl_path(path)) return fake_stat_lkl(path, st);
+    if (is_lkl_path(path)) return lkl_stat_real(path, st);
     return r_stat(path, st);
 }
 
 int lstat(const char *path, struct stat *st)
 {
     INIT(lstat);
-    if (is_lkl_path(path)) return fake_stat_lkl(path, st);
+    if (is_lkl_path(path)) return lkl_stat_real(path, st);
     return r_lstat(path, st);
 }
 
@@ -299,6 +326,7 @@ int fstat(int fd, struct stat *st)
 {
     INIT(fstat);
     if (fd < MAGIC_FD_BASE) return r_fstat(fd, st);
+    /* LKL-fd-re: ATM nincs FSTAT a control-socketon; fake. */
     return fake_stat_lkl(NULL, st);
 }
 
@@ -429,6 +457,37 @@ int closedir(DIR *dirp)
     static int (*r_closedir)(DIR *) = NULL;
     if (!r_closedir) r_closedir = dlsym(RTLD_NEXT, "closedir");
     return r_closedir ? r_closedir(dirp) : 0;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  socket() override — fake udev-monitor (NETLINK_KOBJECT_UEVENT)
+ *
+ *  A libusb-1.0-Debian-build kötelezően udev-szel init-el: a hotplug-monitor
+ *  netlink-socket-jét nyitja, és ha az fail-el, libusb_init = -99
+ *  ('LIBUSB_ERROR_NOT_SUPPORTED'). Az Android user-mode-on nincs udev-démon
+ *  → fail. A LIBUSB_DISABLE_UDEV env nem hat (compile-time).
+ *
+ *  Fix: a shim átveszi a NETLINK_KOBJECT_UEVENT socket-hívást, és egy
+ *  socketpair() egyik végét adja vissza. A libusb azt hiszi van udev-monitor;
+ *  recvmsg sosem ad event-et (csendben blocked-pollol), DE az init megy.
+ * ──────────────────────────────────────────────────────────────────── */
+static int (*r_socket)(int, int, int) = NULL;
+
+#ifndef NETLINK_KOBJECT_UEVENT
+#define NETLINK_KOBJECT_UEVENT 15
+#endif
+
+int socket(int domain, int type, int protocol)
+{
+    INIT(socket);
+    if (domain == AF_NETLINK && protocol == NETLINK_KOBJECT_UEVENT) {
+        int sp[2];
+        if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) < 0) return -1;
+        /* a peer-vég (sp[1]) sosem ad data-t → recvmsg blocked-marad,
+         * de NEM fail-el. A libusb init OK. */
+        return sp[0];
+    }
+    return r_socket(domain, type, protocol);
 }
 
 /* Constructor — minden indításkor stderr-re log (egyszerű diag). */

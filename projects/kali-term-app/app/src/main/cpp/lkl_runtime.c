@@ -1099,6 +1099,43 @@ static void ctrl_handle_command(int conn, char *line)
         int rn = n == 0 ? snprintf(resp, sizeof(resp), "OK\n")
                         : snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -n);
         write(conn, resp, rn);
+    } else if (strcmp(op, "STAT") == 0) {
+        const char *path = rest;
+        /* Linux struct stat layout — ARM64 aarch64; az LKL és a Kali glibc
+         * is ugyanazt használja. lkl_sys_newfstatat: dirfd=AT_FDCWD,
+         * path, statbuf, flag=0. */
+        /* Linux ARM64 struct stat layout — field-nevek renamelve, mert a
+         * Bionic libc-header st_atime/mtime/ctime-t macro-ként define. */
+        struct lkl_stat_buf {
+            unsigned long  k_dev, k_ino;
+            unsigned int   k_mode, k_nlink;
+            unsigned int   k_uid, k_gid;
+            unsigned long  k_rdev;
+            unsigned long  __pad1;
+            long           k_size;
+            int            k_blksize, __pad2;
+            long           k_blocks;
+            long           k_atime, k_atime_nsec;
+            long           k_mtime, k_mtime_nsec;
+            long           k_ctime, k_ctime_nsec;
+            int            __unused4, __unused5;
+        } st;
+        memset(&st, 0, sizeof(st));
+        /* LKL_NR_newfstatat = 79 (ARM64) */
+        long rc = lkl_call(79, LKL_AT_FDCWD,
+                           (long)(intptr_t)path, (long)(intptr_t)&st, 0, 0);
+        char resp[160];
+        if (rc < 0) {
+            int n = snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -rc);
+            write(conn, resp, n);
+        } else {
+            int n = snprintf(resp, sizeof(resp),
+                "OK mode=%u size=%ld ino=%lu\n",
+                (unsigned)st.k_mode,
+                (long)st.k_size,
+                (unsigned long)st.k_ino);
+            write(conn, resp, n);
+        }
     } else if (strcmp(op, "LISTDIR") == 0) {
         const char *path = rest;
         long fd = lkl_open(path, LKL_O_RDONLY);
