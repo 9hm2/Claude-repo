@@ -682,6 +682,40 @@ int fstat(int fd, struct stat *st)
     return fake_stat_lkl(NULL, st);
 }
 
+/* fcntl() intercept — magic-fd-ekre (LKL-routed netlink, KMSG, file) a kernel
+ * EBADF-fel utasítja vissza, mert nem valódi Linux fd. A libnl/iproute2
+ * F_GETFD/F_SETFD/F_GETFL/F_SETFL hívásokat csinál a netlink socket-en —
+ * EBADF visszaadás esetén "Cannot send dump request: Bad file descriptor".
+ * Cache-elt flag-eket adunk vissza per-fd, ami libnl-nek elég. */
+static int (*r_fcntl)(int, int, ...) = NULL;
+int fcntl(int fd, int cmd, ...)
+{
+    if (!r_fcntl) r_fcntl = dlsym(RTLD_NEXT, "fcntl");
+    /* arg: F_GETFL/F_GETFD nem vesznek argot, F_SETFL/F_SETFD int-et,
+     * F_SETLK struct flock*-ot. Egyetlen va_arg-pattern fed le mindent. */
+    va_list ap; va_start(ap, cmd);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    if (fd < MAGIC_FD_BASE) return r_fcntl(fd, cmd, arg);
+    /* Magic-fd-re: leggyakoribb fcntl-cmd-eket no-opnak/cached-flag-nek
+     * vesszük. A libnl O_NONBLOCK-ot tipikusan beállítja; mi visszaadjuk. */
+    switch (cmd) {
+    case F_GETFD: return 0;            /* close-on-exec: nem fontos a magic-fd-n */
+    case F_SETFD: return 0;
+    case F_GETFL: return O_RDWR;       /* alapértelmezett mode */
+    case F_SETFL: return 0;            /* no-op (libnl O_NONBLOCK kérése elfogadva) */
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
+        /* dup-ot nem támogatunk a magic-fd-re — visszaadhat EBADF-et libnl,
+         * de tipikus useshez nincs szükség dup-ra. */
+        errno = ENOTSUP; return -1;
+    default:
+        /* Ismeretlen cmd-re csendben sikerrel térünk vissza — biztonságosabb
+         * mint EBADF, ami abort-olja a libnl flow-t. */
+        return 0;
+    }
+}
+
 /* glibc-régi __xstat/__lxstat/__fxstat alias-ok — a Debian 9-előtti libc
  * ezeket hívja, modern glibc default a direct `stat`-szimbólumokat. */
 int __xstat(int ver, const char *path, struct stat *st)  { return stat(path, st); }
