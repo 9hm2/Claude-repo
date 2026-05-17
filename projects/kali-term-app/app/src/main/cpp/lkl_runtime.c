@@ -1368,24 +1368,32 @@ static void ctrl_handle_command(int conn, char *line)
     }
 }
 
+/* Byte-szintű line-reader: a control-socket protokoll szöveges parancs-vonalakból
+ * áll, néhány közülük (NLSEND / NLSETSO) bináris payload-dal folytatódik
+ * közvetlenül a newline UTÁN. A korábbi nagy-buffer-mohó megközelítés
+ * eltátongott: a bináris adatot is bezsongta a TEXT-bufferbe, és a handler
+ * `read(conn, ..., len)`-je fresh socket-byte-ot olvasott garbled módon.
+ *
+ * Megoldás: a per-conn loop EGY BYTE-onként olvas a newline-ig (\n), és
+ * akkor adja a handler-nek a sort. Mivel a handler binary-payload után
+ * azonnal `read(conn, ...)`-t hív, a socketben pont a payload következik. */
 static void *ctrl_per_conn(void *arg)
 {
     int conn = (int)(intptr_t)arg;
-    char buf[2048];
+    char line[2048];
     while (1) {
-        ssize_t n = read(conn, buf, sizeof(buf) - 1);
-        if (n <= 0) break;
-        buf[n] = 0;
-        char *line = buf;
-        char *nl;
-        while ((nl = strchr(line, '\n')) != NULL) {
-            *nl = 0;
-            if (*line) ctrl_handle_command(conn, line);
-            line = nl + 1;
+        size_t pos = 0;
+        int got_line = 0;
+        while (pos + 1 < sizeof(line)) {
+            char c;
+            ssize_t r = read(conn, &c, 1);
+            if (r <= 0) { close(conn); return NULL; }
+            if (c == '\n') { line[pos] = 0; got_line = 1; break; }
+            line[pos++] = c;
         }
+        if (!got_line) { line[pos] = 0; }  /* túl hosszú; truncate */
+        if (line[0]) ctrl_handle_command(conn, line);
     }
-    close(conn);
-    return NULL;
 }
 
 static void *ctrl_thread_fn(void *arg)
