@@ -390,6 +390,67 @@ int my_openat_impl(int dirfd, const char *path, int flags, ...)
 }
 
 /* ────────────────────────────────────────────────────────────────────
+ *  klogctl() — syslog(2) libc-wrapper intercept
+ *
+ *  A util-linux `dmesg` ALAPÉRTELMEZÉSben a `klogctl()` libc-wrapper-en
+ *  át hív (NEM /dev/kmsg-et nyit). Android-kernelen a klogctl syscall
+ *  ENOSYS-szel tér vissza (SELinux blokk) → dmesg "Function not
+ *  implemented"-tel kilép, mielőtt a /dev/kmsg fallback-re jutna.
+ *
+ *  Megoldás: a `klogctl` libc-szimbólumot LD_PRELOAD-szal felülírjuk,
+ *  és a SYSLOG_ACTION_READ_ALL / SIZE_BUFFER műveleteket az LKL kernel
+ *  ring-bufferéből szolgáljuk ki a KMSG control-socket parancson át.
+ *
+ *  type értékek (Linux sys/klog.h):
+ *     3 = SYSLOG_ACTION_READ_ALL    — visszaadja a teljes ring-buffert
+ *    10 = SYSLOG_ACTION_SIZE_BUFFER — ring-buffer teljes méretét adja
+ *     9 = SYSLOG_ACTION_SIZE_UNREAD — még nem olvasott byte-ok száma
+ * ──────────────────────────────────────────────────────────────────── */
+int klogctl(int type, char *bufp, int len)
+{
+    /* Egyetlen kmsg-snapshot az egész klogctl-streamhez (folyamatosan
+     * újra lekérhetjük, de a buffer minden hívásnál friss). */
+    int kfd = kmsg_open_via_lkl();
+    fprintf(stderr, "[shim klogctl] type=%d len=%d kfd=%d\n", type, len, kfd);
+    if (kfd < 0) { errno = ENOSYS; return -1; }
+    struct kmsg_buf *k = get_kmsg(kfd);
+    if (!k || !k->data) { free_kmsg(kfd); errno = ENOSYS; return -1; }
+
+    long rc = -1;
+    switch (type) {
+    case 3:   /* READ_ALL */
+    case 4: { /* READ_CLEAR — clear-t nem implementáljuk, csak read */
+        if (!bufp || len <= 0) { errno = EINVAL; break; }
+        size_t take = (size_t)len < k->len ? (size_t)len : k->len;
+        memcpy(bufp, k->data, take);
+        rc = (long)take;
+        break;
+    }
+    case 9:   /* SIZE_UNREAD — egyszerűen a teljes méret */
+    case 10:  /* SIZE_BUFFER — ugyanaz */
+        rc = (long)k->len;
+        break;
+    case 0:   /* CLOSE */
+    case 1:   /* OPEN */
+    case 5:   /* CLEAR — no-op */
+    case 6:   /* CONSOLE_OFF */
+    case 7:   /* CONSOLE_ON */
+    case 8:   /* CONSOLE_LEVEL */
+        rc = 0;
+        break;
+    default:
+        errno = EINVAL;
+        rc = -1;
+        break;
+    }
+    free_kmsg(kfd);
+    return (int)rc;
+}
+
+/* MEGJEGYZÉS: a `syslog(3)` user-facing logger (NEM syscall) marad
+ * érintetlen — csak a `klogctl` syscall-wrappert override-oljuk. */
+
+/* ────────────────────────────────────────────────────────────────────
  *  read() / pread()
  * ──────────────────────────────────────────────────────────────────── */
 
