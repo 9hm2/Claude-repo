@@ -414,14 +414,32 @@ class KaliShellService : Service() {
 
         // libusb 'sysfs not mounted' fix — explicit garantáljuk a kritikus
         // /sys/bus/usb/devices és /sys/class/usbmisc directory létezését.
-        // Akkor is létrejön, ha az LKL kernel-konfig USB-mentes (üres,
-        // de létezik → libusb `open(..., O_DIRECTORY)` siker).
         listOf("bus/usb/devices", "bus/usb/drivers", "bus/hid/devices",
                "class/usb", "class/usbmisc", "class/hidraw", "class/tty",
                "class/net", "class/input", "class/block",
                "devices/virtual").forEach {
             File(sysMirror, it).mkdirs()
         }
+
+        // DIAG: pontosan megmutatja, hogy az LKL-ben valóban mi van.
+        // A user kérése: a root hub-okat (Linux Foundation 2.0/3.0) látnia
+        // kell még csatlakoztatott USB nélkül is, ha a vhci_hcd működik.
+        fun dumpDiag(name: String, mirror: File, relPath: String) {
+            val f = File(mirror, relPath)
+            val entries = f.list()?.toList() ?: emptyList()
+            val preview = entries.take(10).joinToString(", ")
+                .let { if (entries.size > 10) "$it, …" else it }
+            KaliInitLog.add("diag", "$name (${entries.size}): $preview")
+        }
+        dumpDiag("/sys/bus/usb/devices",   sysMirror, "bus/usb/devices")
+        dumpDiag("/sys/devices/platform",  sysMirror, "devices/platform")
+        dumpDiag("/sys/class/usb",         sysMirror, "class/usb")
+        dumpDiag("/sys/class/usbmisc",     sysMirror, "class/usbmisc")
+        dumpDiag("/dev (LKL devtmpfs top)",devMirror, "")
+        // Ha vhci_hcd betöltődött, ennek a path-nak léteznie kell
+        File(sysMirror, "devices/platform/vhci_hcd.0").list()?.let {
+            KaliInitLog.add("diag", "vhci_hcd.0 (${it.size}): ${it.take(15).joinToString(", ")}")
+        } ?: KaliInitLog.add("diag", "vhci_hcd.0 NINCS — vhci_hcd init nem futott le?")
         // /sys/bus/usb/devices/usb1 stub — proot bind később (csak ha LKL
         // valódi root-hub-bejegyzéssel rendelkezik).
 
