@@ -39,6 +39,7 @@
 #include <sys/un.h>
 #include <sys/time.h>
 #include <sys/select.h>
+#include <poll.h>
 #include <sys/vfs.h>
 #include <sys/statfs.h>
 #include <linux/magic.h>
@@ -532,6 +533,12 @@ ssize_t read(int fd, void *buf, size_t count)
         return (ssize_t)take;
     }
 
+    /* NL-fd: read() = recvfrom() (POSIX equivalent). iproute2/libnl gyakran
+     * read()-et hív a netlink fd-n recvfrom helyett. */
+    if (is_nl_fd(fd)) {
+        return recvfrom(fd, buf, count, 0, NULL, NULL);
+    }
+
     struct lkl_slot *s = get_slot(fd);
     if (!s) { errno = EBADF; return -1; }
 
@@ -555,6 +562,86 @@ ssize_t read(int fd, void *buf, size_t count)
     int err = 0; sscanf(hdr, "ERR errno=%d", &err);
     errno = err ? err : EIO;
     return -1;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  poll() / select() — netlink-fd-re fake-ready visszaadás.
+ *
+ *  libnl/iproute2 a netlink-fd-en poll()/ppoll()-t hív, hogy várjon a
+ *  response-ra. Mivel a magic-fd nem valódi Linux fd, a kernel POLLNVAL-t
+ *  ad. Megoldás: ha a poll-fd-set TARTALMAZZA netlink-magic-fd-t, azt
+ *  külön kezeljük: POLLIN ready-t adunk (tudjuk, hogy a következő read
+ *  blokkolva fog várni a control-socketen — az LKL kernel maga timeout-ol).
+ * ──────────────────────────────────────────────────────────────────── */
+static int (*r_poll)(struct pollfd *, nfds_t, int) = NULL;
+int poll(struct pollfd *fds, nfds_t nfds, int timeout)
+{
+    if (!r_poll) r_poll = dlsym(RTLD_NEXT, "poll");
+    int has_magic = 0;
+    for (nfds_t i = 0; i < nfds; i++) {
+        if (fds[i].fd >= MAGIC_FD_BASE) { has_magic = 1; break; }
+    }
+    if (!has_magic) return r_poll(fds, nfds, timeout);
+
+    /* Magic-fd-ek: instant POLLIN-ready visszaadunk (recvfrom blokkol majd
+     * a control-socketen, ami az LKL kernel-választ várja). Real-fd-eket
+     * is benne hagyjuk: ezek-re a poll külön nem fog futni, mert csak az
+     * első magic-fd-re reagálunk azonnal. */
+    int n_ready = 0;
+    for (nfds_t i = 0; i < nfds; i++) {
+        if (fds[i].fd >= MAGIC_FD_BASE) {
+            fds[i].revents = fds[i].events & (POLLIN | POLLOUT);
+            if (fds[i].revents) n_ready++;
+        } else {
+            fds[i].revents = 0;
+        }
+    }
+    return n_ready;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  write() — NL-fd-re sendto() ekvivalens, többi magic-fd-re EBADF.
+ * ──────────────────────────────────────────────────────────────────── */
+static ssize_t (*r_write)(int, const void *, size_t) = NULL;
+ssize_t write(int fd, const void *buf, size_t count)
+{
+    if (!r_write) r_write = dlsym(RTLD_NEXT, "write");
+    if (fd < MAGIC_FD_BASE) return r_write(fd, buf, count);
+    if (is_nl_fd(fd)) {
+        return sendto(fd, buf, count, 0, NULL, 0);
+    }
+    /* KMSG és LKL file fd-re a write nem támogatott. */
+    errno = EBADF;
+    return -1;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  ioctl() — magic-fd-re: NL-fd-en a netlink-specifikus ioctl-eket
+ *  (SIOCGIFCONF, stb.) jelenleg NEM rout-eljuk LKL-be — visszaadunk
+ *  EINVAL-t/0-t a libnl-flow folytatásához. A jövőben routerelhető.
+ * ──────────────────────────────────────────────────────────────────── */
+static int (*r_ioctl)(int, unsigned long, ...) = NULL;
+int my_ioctl_impl(int fd, unsigned long request, ...);
+__asm__(".globl ioctl\n\t.set ioctl, my_ioctl_impl");
+
+int my_ioctl_impl(int fd, unsigned long request, ...)
+{
+    if (!r_ioctl) r_ioctl = dlsym(RTLD_NEXT, "ioctl");
+    va_list ap; va_start(ap, request);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    if (fd < MAGIC_FD_BASE) return r_ioctl(fd, request, arg);
+    /* Magic-fd-re: tipikus libnl ioctl (SIOCGSTAMP, FIONREAD) — no-op
+     * 0-val, hogy a flow-t ne abort-olja. Strict-ioctl-igényű hívásokra
+     * (tty TCGETS, stb.) ENOTTY-t adunk. */
+    switch (request) {
+    case 0x541b:  /* FIONREAD — bytes available; legbiztonságosabb 0 */
+        if (arg) *(int *)arg = 0;
+        return 0;
+    default:
+        errno = ENOTTY;
+        return -1;
+    }
 }
 
 /* ────────────────────────────────────────────────────────────────────
@@ -656,7 +743,20 @@ static int is_virt_fs_path(const char *p)
     return 0;
 }
 
-int stat(const char *path, struct stat *st)
+/* stat/lstat/fstat: FILE_OFFSET_BITS=64 a `stat`/`lstat`/`fstat` szimbólumokat
+ * a 64-es változatra renamel-i (asm-rename). Explicit asm-alias-szal mindkét
+ * névre exportáljuk az implementációt. */
+int my_stat_impl(const char *path, struct stat *st);
+int my_lstat_impl(const char *path, struct stat *st);
+int my_fstat_impl(int fd, struct stat *st);
+__asm__(".globl stat\n\t.set stat, my_stat_impl");
+__asm__(".globl stat64\n\t.set stat64, my_stat_impl");
+__asm__(".globl lstat\n\t.set lstat, my_lstat_impl");
+__asm__(".globl lstat64\n\t.set lstat64, my_lstat_impl");
+__asm__(".globl fstat\n\t.set fstat, my_fstat_impl");
+__asm__(".globl fstat64\n\t.set fstat64, my_fstat_impl");
+
+int my_stat_impl(const char *path, struct stat *st)
 {
     INIT(stat);
     int rc = r_stat(path, st);
@@ -665,7 +765,7 @@ int stat(const char *path, struct stat *st)
     return rc;
 }
 
-int lstat(const char *path, struct stat *st)
+int my_lstat_impl(const char *path, struct stat *st)
 {
     INIT(lstat);
     int rc = r_lstat(path, st);
@@ -674,11 +774,17 @@ int lstat(const char *path, struct stat *st)
     return rc;
 }
 
-int fstat(int fd, struct stat *st)
+int my_fstat_impl(int fd, struct stat *st)
 {
     INIT(fstat);
     if (fd < MAGIC_FD_BASE) return r_fstat(fd, st);
-    /* LKL-fd-re: ATM nincs FSTAT a control-socketon; fake. */
+    /* NL-fd-re: fake-stat (socket-mode). */
+    if (is_nl_fd(fd)) {
+        memset(st, 0, sizeof(*st));
+        st->st_mode = S_IFSOCK | 0666;
+        return 0;
+    }
+    /* LKL-fd-re: fake-stat (regular file). */
     return fake_stat_lkl(NULL, st);
 }
 
@@ -1216,15 +1322,15 @@ static long fake_fs_magic_for_path(const char *path)
     return 0;
 }
 
-int statfs(const char *path, struct statfs *buf)
+int my_statfs_impl(const char *path, struct statfs *buf);
+__asm__(".globl statfs\n\t.set statfs, my_statfs_impl");
+__asm__(".globl statfs64\n\t.set statfs64, my_statfs_impl");
+
+int my_statfs_impl(const char *path, struct statfs *buf)
 {
     INIT(statfs);
     int rc = r_statfs(path, buf);
     long magic = fake_fs_magic_for_path(path);
-    /* UNCONDITIONAL debug print — diagnosztika a libusb 'sysfs not mounted'
-     * problémához. Ha ez a sor a stderr-ben látható lsusb futtatáskor,
-     * a statfs override működik. Ha nem, libusb a syscall()-t direkten
-     * használja vagy statvfs-t (POSIX) hív. */
     SHIM_DBG("[shim statfs] path=%s rc=%d magic_override=0x%lx\n",
             path ? path : "(null)", rc, magic);
     if (rc == 0 && buf && magic != 0) {
