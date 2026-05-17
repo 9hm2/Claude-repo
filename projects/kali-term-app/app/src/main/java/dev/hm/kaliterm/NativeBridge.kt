@@ -97,6 +97,10 @@ object NativeBridge {
      */
     external fun nativeLklReadFile(path: String): String
 
+    /** LKL kernel ring-buffer kiolvasása syslog(2) SYSLOG_ACTION_READ_ALL-on át.
+     *  A chrooted `dmesg` ezzel kap kernel-üzeneteket az LKL-ből. */
+    external fun nativeLklReadKmsg(): String
+
     /**
      * Phase 2c.5f — egy LKL-belső könyvtár entry-listája (getdents64-szel).
      * Newline-separated nevek, "." és ".." nélkül. Üres string ha a kernel

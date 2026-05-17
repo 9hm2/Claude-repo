@@ -106,10 +106,86 @@ static int is_lkl_path(const char *path);
 static int is_virt_fs_path(const char *p);
 
 /* PHASE 4 — A control-socket-on-keresztüli LKL file-routing-ot KIKAPCSOLVA
- * tartjuk (régi dirfd-assertion bug). Helyette: a libudev REPLACEMENT (lentebb)
- * kezeli a /sys/bus/usb enumeráció specifikus problémáját közvetlen libudev-
- * API-override-okkal. Egyszerűbb és célzottabb mint syscall-szinten harcolni. */
-static int is_lkl_path(const char *path) { (void)path; return 0; }
+ * tartjuk általánosan (régi dirfd-assertion bug). Helyette: a libudev
+ * REPLACEMENT (lentebb) kezeli a /sys/bus/usb enumeráció specifikus
+ * problémáját közvetlen libudev-API-override-okkal.
+ *
+ * EGY KIVÉTEL: /dev/kmsg — a chrooted dmesg ezt nyitja, és az LKL kernel
+ * ring-buffer-jét akarja kiolvasni. Ezt explicit LKL-routon küldjük át. */
+static int is_lkl_path(const char *path)
+{
+    if (path && strcmp(path, "/dev/kmsg") == 0) return 1;
+    return 0;
+}
+
+/* Speciálisan a /dev/kmsg-re: a control-socket KMSG parancsa az LKL
+ * syslog(2) hívást futtatja és visszaadja a ring-buffer-t. A shim
+ * egyszerűsíti az open-flow-t — nincs OPEN/READ-cycle, egy hívásban
+ * megkapjuk az egész output-ot, és in-memory tartjuk a fd-hez. */
+struct kmsg_buf {
+    char *data;
+    size_t len;
+    size_t pos;
+};
+#define MAX_KMSG_BUFS 16
+static struct kmsg_buf g_kmsg[MAX_KMSG_BUFS];
+static pthread_mutex_t g_kmsg_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int kmsg_open_via_lkl(void)
+{
+    int sock = sock_connect();
+    if (sock < 0) return -1;
+    if (write(sock, "KMSG\n", 5) != 5) { close(sock); return -1; }
+    char first[64];
+    if (read_line(sock, first, sizeof(first)) <= 0) {
+        close(sock); return -1;
+    }
+    long size = 0;
+    if (sscanf(first, "OK size=%ld", &size) != 1 || size < 0) {
+        close(sock); return -1;
+    }
+    char *buf = malloc((size_t)size + 1);
+    if (!buf) { close(sock); return -1; }
+    size_t got = 0;
+    INIT(read);
+    while (got < (size_t)size) {
+        ssize_t r = r_read(sock, buf + got, size - got);
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    close(sock);
+    buf[got] = 0;
+
+    pthread_mutex_lock(&g_kmsg_lock);
+    for (int i = 0; i < MAX_KMSG_BUFS; i++) {
+        if (g_kmsg[i].data == NULL) {
+            g_kmsg[i].data = buf;
+            g_kmsg[i].len = got;
+            g_kmsg[i].pos = 0;
+            pthread_mutex_unlock(&g_kmsg_lock);
+            return MAGIC_FD_BASE + MAX_LKL_FDS + i;  /* külön namespace */
+        }
+    }
+    pthread_mutex_unlock(&g_kmsg_lock);
+    free(buf);
+    return -1;
+}
+
+static int is_kmsg_fd(int fd) {
+    return fd >= MAGIC_FD_BASE + MAX_LKL_FDS &&
+           fd <  MAGIC_FD_BASE + MAX_LKL_FDS + MAX_KMSG_BUFS;
+}
+static struct kmsg_buf *get_kmsg(int fd) {
+    if (!is_kmsg_fd(fd)) return NULL;
+    return &g_kmsg[fd - (MAGIC_FD_BASE + MAX_LKL_FDS)];
+}
+static void free_kmsg(int fd) {
+    if (!is_kmsg_fd(fd)) return;
+    pthread_mutex_lock(&g_kmsg_lock);
+    struct kmsg_buf *k = &g_kmsg[fd - (MAGIC_FD_BASE + MAX_LKL_FDS)];
+    free(k->data); k->data = NULL; k->len = 0; k->pos = 0;
+    pthread_mutex_unlock(&g_kmsg_lock);
+}
 
 /* Unix-socket connect. Non-blocking + select(2-sec) — dead server NE fagyasszon
  * be hangin' connectet. A SO_RCVTIMEO/SO_SNDTIMEO csak read/write-ra hat,
@@ -234,6 +310,20 @@ int open(const char *path, int flags, ...)
         return rc;
     }
 
+    /* SPECIAL: /dev/kmsg → KMSG control-socket parancs.
+     * Egyetlen hívás visszaadja az LKL ring-buffer teljes tartalmát,
+     * az in-memory buffer-be tesszük, a fd-t magic-namespace-ben adjuk. */
+    if (strcmp(path, "/dev/kmsg") == 0) {
+        int kfd = kmsg_open_via_lkl();
+        if (kfd >= 0) {
+            SHIM_DBG("[shim open] /dev/kmsg → KMSG magic fd=%d\n", kfd);
+            return kfd;
+        }
+        /* fallback: empty file via memfd */
+        errno = ENOENT;
+        return -1;
+    }
+
     int sock = sock_connect();
     if (sock < 0) return r_open(path, flags, mode);
 
@@ -285,6 +375,24 @@ ssize_t read(int fd, void *buf, size_t count)
 {
     INIT(read);
     if (fd < MAGIC_FD_BASE) return r_read(fd, buf, count);
+
+    /* KMSG-fd: az in-memory buffer-ből szolgálunk. */
+    if (is_kmsg_fd(fd)) {
+        struct kmsg_buf *k = get_kmsg(fd);
+        if (!k || !k->data) { errno = EBADF; return -1; }
+        pthread_mutex_lock(&g_kmsg_lock);
+        size_t avail = k->len - k->pos;
+        if (avail == 0) {
+            pthread_mutex_unlock(&g_kmsg_lock);
+            return 0;  /* EOF */
+        }
+        size_t take = count < avail ? count : avail;
+        memcpy(buf, k->data + k->pos, take);
+        k->pos += take;
+        pthread_mutex_unlock(&g_kmsg_lock);
+        return (ssize_t)take;
+    }
+
     struct lkl_slot *s = get_slot(fd);
     if (!s) { errno = EBADF; return -1; }
 
@@ -318,6 +426,13 @@ int close(int fd)
 {
     INIT(close);
     if (fd < MAGIC_FD_BASE) return r_close(fd);
+
+    /* KMSG-fd: csak in-memory buffer-t kell felszabadítani. */
+    if (is_kmsg_fd(fd)) {
+        free_kmsg(fd);
+        return 0;
+    }
+
     struct lkl_slot *s = get_slot(fd);
     if (!s) { errno = EBADF; return -1; }
 

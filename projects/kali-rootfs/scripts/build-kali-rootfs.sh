@@ -115,11 +115,22 @@ deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmwa
 deb-src http://kali.download/kali kali-rolling main contrib non-free non-free-firmware
 EOF
 
-# 7) Pre-installolás: az alaprootfs-be belerakjuk a USB-debug csomagokat,
-# hogy a felhasználónak ne kelljen utólag apt install-olnia.
+# 7) Pre-installolás: az alaprootfs-be belerakjuk a USB-debug + hálózat +
+# Wi-Fi csomagokat, hogy a felhasználónak ne kelljen utólag apt install-olnia.
 #   - usbutils: lsusb (+ libusb-1.0-0 dependency)
 #   - hwdata: usb.ids adatbázis (eltünteti az 'unable to initialize usb spec' warning-ot)
-#   - firmware-realtek: Realtek Wi-Fi/Ethernet chipek firmware-ei (non-free-firmware)
+#   - firmware-realtek: Realtek Wi-Fi/Ethernet chipek firmware-ei
+#   - firmware-atheros: Atheros Wi-Fi firmware (ath9k_htc, stb.)
+#   - firmware-misc-nonfree: egyéb non-free firmware (Broadcom, Mediatek, ...)
+#   - net-tools: ifconfig, netstat, route (legacy de gyakori)
+#   - iproute2: ip, ss (modern)
+#   - kmod: lsmod, modprobe, insmod, rmmod
+#   - iw: iw dev wlan0 ... (Wi-Fi config)
+#   - wireless-tools: iwconfig, iwlist (legacy Wi-Fi config)
+#   - wpasupplicant: Wi-Fi WPA/WPA2/WPA3 association
+#   - pciutils: lspci (+ pci.ids adatbázis)
+#   - util-linux: dmesg + sok más (csak ha még nincs)
+#   - rfkill: Wi-Fi/Bluetooth radio-engedély kezelés
 # A `--no-install-recommends` az APK-méret féken tartására, csak ami szükséges.
 echo "[kali] copy Kali archive keyring to chroot /etc/apt/trusted.gpg.d/"
 # Az apt sqv verifikátora a chroot belsejében saját trusted.gpg.d-jét nézi;
@@ -142,7 +153,18 @@ ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
     apt-get install -y --no-install-recommends \
         usbutils \
         hwdata \
-        firmware-realtek
+        pciutils \
+        firmware-realtek \
+        firmware-atheros \
+        firmware-misc-nonfree \
+        net-tools \
+        iproute2 \
+        kmod \
+        iw \
+        wireless-tools \
+        wpasupplicant \
+        util-linux \
+        rfkill
 
 echo "[kali] cleanup (qemu, cache, logs)"
 ${SUDO} rm -f  "${ROOTFS_DIR}/usr/bin/qemu-aarch64-static"

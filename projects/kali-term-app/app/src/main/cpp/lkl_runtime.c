@@ -1175,6 +1175,26 @@ static void ctrl_handle_command(int conn, char *line)
         }
         lkl_close(fd);
         write(conn, "\n", 1);  /* empty line = end */
+    } else if (strcmp(op, "KMSG") == 0) {
+        /* KMSG: az LKL kernel ring-buffer-jét adja vissza syslog(2)
+         * SYSLOG_ACTION_READ_ALL-on át. A chrooted dmesg az /dev/kmsg
+         * shim-helyettesítőjén keresztül kapja meg ezeket az üzeneteket. */
+        long sz = lkl_call(LKL_NR_syslog, LKL_SYSLOG_SIZE_BUFFER, 0, 0, 0, 0);
+        if (sz <= 0) sz = 1 << 16;          /* 64KB default */
+        if (sz > (1 << 22)) sz = (1 << 22); /* max 4MB cap */
+        char *kbuf = malloc((size_t)sz + 1);
+        if (!kbuf) {
+            write(conn, "ERR errno=12\n", 13);
+            return;
+        }
+        long n = lkl_call(LKL_NR_syslog, LKL_SYSLOG_READ_ALL,
+                          (long)(intptr_t)kbuf, sz, 0, 0);
+        if (n < 0) n = 0;
+        char hdr[64];
+        int hn = snprintf(hdr, sizeof(hdr), "OK size=%ld\n", n);
+        write(conn, hdr, hn);
+        if (n > 0) write(conn, kbuf, (size_t)n);
+        free(kbuf);
     } else {
         write(conn, "ERR unknown_op\n", 15);
     }
@@ -1979,4 +1999,57 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklReadTree(
     if (arr) (*env)->SetByteArrayRegion(env, arr, 0, (jsize)pos, (jbyte *)out);
     free(out);
     return arr;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  nativeLklReadKmsg — az LKL kernel ring buffer kiolvasása.
+ *
+ *  Probléma: a chrooted dmesg `/dev/kmsg`-t nyitja, ami nem létezik a
+ *  LKL devtmpfs-én default-ban (csak ha CONFIG_DEVMEM és kapcsolódó
+ *  driverek + auto-create mind aktív). Plus a syslog(2) syscall LKL-ben
+ *  általában nem-implemented.
+ *
+ *  Megoldás: ezt a JNI-t hívja a shim/control-socket a /dev/kmsg
+ *  emulációhoz. Az LKL `syscall(__NR_syslog, SYSLOG_ACTION_READ_ALL, ...)`
+ *  hívásával kiolvassuk a teljes kernel-ring-buffer-t.
+ *
+ *  ARM64 syscall-számok (asm-generic/unistd.h):
+ *    __NR_syslog = 116
+ *  SYSLOG_ACTION_READ_ALL = 3
+ * ──────────────────────────────────────────────────────────────────── */
+#define LKL_NR_syslog       116
+#define LKL_SYSLOG_READ_ALL 3
+#define LKL_SYSLOG_SIZE_BUFFER 10
+
+JNIEXPORT jstring JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklReadKmsg(JNIEnv *env, jobject thiz)
+{
+    pthread_mutex_lock(&g_lkl.lock);
+    lkl_resolve_locked();
+    if (!g_lkl.running || !g_lkl.syscall_fn) {
+        pthread_mutex_unlock(&g_lkl.lock);
+        return (*env)->NewStringUTF(env, "");
+    }
+
+    /* Lekérdezzük a ring-buffer méretet, hogy elegendő buf-ot allokáljunk. */
+    long sz = lkl_call(LKL_NR_syslog, LKL_SYSLOG_SIZE_BUFFER, 0, 0, 0, 0);
+    if (sz <= 0) sz = 1 << 16;  /* 64KB default */
+    if (sz > (1 << 22)) sz = (1 << 22);  /* max 4MB */
+
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) {
+        pthread_mutex_unlock(&g_lkl.lock);
+        return (*env)->NewStringUTF(env, "");
+    }
+
+    /* SYSLOG_ACTION_READ_ALL: kiolvas teljes ring-buffer-t (nem-blokkoló) */
+    long n = lkl_call(LKL_NR_syslog, LKL_SYSLOG_READ_ALL,
+                      (long)(intptr_t)buf, sz, 0, 0);
+    if (n < 0) n = 0;
+    buf[n] = '\0';
+    pthread_mutex_unlock(&g_lkl.lock);
+
+    jstring out = (*env)->NewStringUTF(env, buf);
+    free(buf);
+    return out;
 }
