@@ -129,6 +129,33 @@ fun Home(
             ) { Text("📋 Logok") }
         }
 
+        // App teljes leállítás — minden service-t (LklService + KaliShellService),
+        // bridge-eket, USB-kapcsolatokat lebont, majd Activity-t finish-eli.
+        // A `:lkl` foreground notification eltűnik, a Samsung BBA többé NEM tartja
+        // életben a processzt — Android felszabadíthatja az erőforrásokat.
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val activity = context as? android.app.Activity
+        androidx.compose.material3.OutlinedButton(
+            onClick = {
+                // 1) USB bridge teljes leállítás (vhci_hcd detach + libusb cleanup)
+                runCatching { controller.stopBridge() }
+                // 2) LKL service stop — halt + 300ms-en belül killProcess(:lkl pid)
+                runCatching { lkl.stop() }
+                // 3) Kali shell service stop — Activity-bind-ünk megszűnik a finish-szel
+                runCatching {
+                    val intent = android.content.Intent(context, KaliShellService::class.java)
+                    context.stopService(intent)
+                }
+                // 4) Activity finish + task remove → app teljesen kilép
+                activity?.finishAndRemoveTask()
+                // 5) Process self-kill — biztos hogy a main process is meghal
+                android.os.Process.killProcess(android.os.Process.myPid())
+            },
+            colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                contentColor = androidx.compose.material3.MaterialTheme.colorScheme.error
+            ),
+        ) { Text("🛑 App teljes leállítás") }
+
         nativeStatus.fold(
             onSuccess = { (msg, ver) ->
                 Text("Natív: $msg")

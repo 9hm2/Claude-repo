@@ -35,6 +35,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>        /* nanosleep — stopUsbBridge detach-wait */
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -1724,12 +1725,35 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
                  *   port_id = 0 (az első virtuális port)
                  *   sockfd  = sv[0]  (kernel-side socket fd)
                  *   devid   = (busnum << 16) | devnum  (USB/IP konvenció)
-                 *   speed   = 3  (USB_SPEED_HIGH; USB 2.0)
-                 */
+                 *   speed   = libusb_get_device_speed() → USB_SPEED_*
+                 *
+                 * KRITIKUS: a vhci_hcd a speed alapján határozza meg az endpoint
+                 * maxpacket-elvárásait. Ha "HIGH"-t (3) mondunk egy FULL-speed
+                 * (USB 1.1) eszközről (pl. FTDI FT232R), a kernel "invalid
+                 * maxpacket 64" warning-ot ír (HS-bulk endpoint elvárt maxpacket
+                 * 512, valódi a 64). A libusb device_speed-jét USB_SPEED_*-ra
+                 * mappel-juk:
+                 *   libusb LOW(1)/FULL(2)/HIGH(3)/SUPER(4)/SUPER_PLUS(5)
+                 *   kernel USB_SPEED_LOW(1)/FULL(2)/HIGH(3)/WIRELESS(4)/SUPER(5)
+                 * A LOW/FULL/HIGH értékek egybe esnek, SUPER tér el (libusb=4,
+                 * kernel=5). 0=UNKNOWN-t HIGH-ra fall-back-eljük. */
+                int dev_speed = libusb_get_device_speed(libusb_get_device(handle));
+                int kernel_speed;
+                switch (dev_speed) {
+                case LIBUSB_SPEED_LOW:        kernel_speed = 1; break;
+                case LIBUSB_SPEED_FULL:       kernel_speed = 2; break;
+                case LIBUSB_SPEED_HIGH:       kernel_speed = 3; break;
+                case LIBUSB_SPEED_SUPER:      kernel_speed = 5; break;
+                case LIBUSB_SPEED_SUPER_PLUS: kernel_speed = 5; break;
+                default:                      kernel_speed = 3; break;  /* fallback */
+                }
+                APPEND("libusb device speed = %d → kernel USB_SPEED = %d\n",
+                       dev_speed, kernel_speed);
+
                 uint32_t devid = ((uint32_t)busnum << 16) | (uint32_t)devnum;
                 char cmd[80];
-                int n = snprintf(cmd, sizeof(cmd), "0 %d %u 3",
-                                 sv[0], (unsigned)devid);
+                int n = snprintf(cmd, sizeof(cmd), "0 %d %u %d",
+                                 sv[0], (unsigned)devid, kernel_speed);
                 long w = lkl_call(LKL_NR_write, sysfs, (long)(intptr_t)cmd,
                                   (long)n, 0, 0);
                 APPEND("attach write \"%s\" (%d byte) → rc=%ld\n", cmd, n, w);
@@ -1789,7 +1813,6 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStopUsbBridge(JNIEnv *env, jobject th
     }
     LOGI("LKL stopUsbBridge: active bridge — initiating teardown");
 
-    /* 1) sv_user close → urb_worker EOF → exit ciklusból */
     int sv_user = g_bridge.sv_user;
     int sv_kern = g_bridge.sv_kern;
     libusb_device_handle *h = g_bridge.handle;
@@ -1803,15 +1826,10 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStopUsbBridge(JNIEnv *env, jobject th
     g_bridge.dup_fd  = -1;
     pthread_mutex_unlock(&g_bridge.lock);
 
-    /* close sv_user; worker thread blokk-olt read-je EOF-ot ad vissza,
-     * loopja kilép. (urb_worker pthread_detach-elt — nem join-olunk rá.) */
-    if (sv_user >= 0) {
-        shutdown(sv_user, SHUT_RDWR);
-        close(sv_user);
-    }
-
-    /* 2) vhci_hcd-nek expliciten szóljunk: detach port 0.
-     * sysfs útvonal írható ha az LKL kernel él. */
+    /* 1) vhci_hcd-nek ELŐSZÖR szóljunk: detach port 0. Ezzel a vhci-rx kernel-
+     * thread graceful shutdown-state-be megy, az URB-eket adekvát módon
+     * zárja le (NEM a "failed to unlink urb" warning-csordát produkálja
+     * mert sv_user csak utána kapja az EOF-ot). */
     pthread_mutex_lock(&g_lkl.lock);
     int kernel_alive = (g_lkl.running && g_lkl.syscall_fn != NULL);
     pthread_mutex_unlock(&g_lkl.lock);
@@ -1823,6 +1841,11 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStopUsbBridge(JNIEnv *env, jobject th
                               (long)(sizeof(cmd) - 1), 0, 0);
             LOGI("LKL stopUsbBridge: vhci_hcd detach write rc=%ld", w);
             lkl_close(sysfs);
+            /* Rövid wait — a vhci kernel-thread feldolgozza a detach-et
+             * mielőtt a sv_user-ben EOF-ot kapna. 100ms tapasztalat alapján
+             * elég. */
+            struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 };
+            nanosleep(&ts, NULL);
         } else {
             LOGI("LKL stopUsbBridge: detach sysfs open rc=%ld (esetleg már detach-elve)",
                  sysfs);
@@ -1830,6 +1853,13 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklStopUsbBridge(JNIEnv *env, jobject th
         /* sv_kern-t is zárjuk az LKL oldalon — ezzel a vhci_hcd kernel-thread
          * "Connection closed" eseményt kap és tisztán leáll. */
         if (sv_kern >= 0) lkl_close(sv_kern);
+    }
+
+    /* 2) sv_user close → urb_worker EOF → exit ciklusból (detach UTÁN,
+     * hogy a vhci kernel-thread tisztán shut-down-oljon).  */
+    if (sv_user >= 0) {
+        shutdown(sv_user, SHUT_RDWR);
+        close(sv_user);
     }
 
     /* 3) libusb cleanup — handle + ctx + dup_fd. */

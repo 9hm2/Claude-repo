@@ -237,6 +237,11 @@ class UsbController(private val context: Context) {
         activeBridgeDeviceId.value = null
         bridgeStatus.value = runCatching { NativeBridge.nativeBridgeStatus() }
             .getOrDefault("UNKNOWN")
+        // 4) Cache invalidálás — a chrooted /sys/bus/usb materialize-elve van a
+        //    boot-time-i LKL-állapotból. Stop után az LKL kernelben már nincs ott
+        //    az eszköz, de a chrooted view stale. A flag jelzi a következő
+        //    `populateLklProcMirror`-nak hogy full re-walkot kell csinálnia.
+        KaliShellService.mirrorCacheDirty = true
         return rc
     }
 }

@@ -405,7 +405,12 @@ class KaliShellService : Service() {
         // még érvényes (file-integrity + LIVE USB-list match), SKIP a teljes
         // walk-ot. Ezzel USB-attach detect-en MINDIG re-populate-elünk, anélkül
         // hogy a változatlan-set esetén feleslegesen 300ms+ walkolnánk.
-        if (lklProcOsrelease != null) {
+        // KIVÉTEL: ha `mirrorCacheDirty` flag set (pl. USB unplug után az
+        // UsbController-ből), kényszerű re-walk.
+        if (mirrorCacheDirty) {
+            KaliInitLog.add("shell-svc", "mirrorCacheDirty=true → force re-walk")
+            mirrorCacheDirty = false
+        } else if (lklProcOsrelease != null) {
             val sUsbBusnum  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
             val sUevent     = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/uevent")
             val sSubsystem  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/subsystem")
@@ -803,6 +808,12 @@ class KaliShellService : Service() {
     companion object {
         private const val NOTIF_CHANNEL_ID = "kaliterm-shell"
         private const val NOTIF_ID = 4712
+
+        /** Globális flag a /proc + /sys mirror cache invalidáláshoz.
+         *  Az `UsbController.stopBridge()` ezt true-ra állítja amikor egy
+         *  USB-eszközt detach-olunk; a következő `populateLklProcMirror`
+         *  hívás full re-walkot végez (cache-check skip). */
+        @Volatile var mirrorCacheDirty: Boolean = false
 
         private val DEFAULT_SKIP_NAMES = setOf(
             // sysfs symlink-loop
