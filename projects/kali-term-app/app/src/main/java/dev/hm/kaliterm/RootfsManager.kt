@@ -235,13 +235,33 @@ fi
 # /sys mirror — ugyanaz a pattern mint /proc-nál. Az LKL kernel-fa
 # nélkül a host /sys-en a Samsung/Qualcomm Android device-fák jönnének,
 # amik a chrootban irrelevánsak.
+# /sys mount — HIBRID: Android real-sysfs base + LKL-overlay USB/class-on.
+#
+# Indok: a libusb (és sok más Linux-tool) statfs("/sys") MAGIC-check-kel
+# ellenőrzi a filesystem-típust. Ha != SYSFS_MAGIC (0x62656572), 'sysfs
+# not mounted'-nak veszi és kihagyja az enumerációt. proot bind-mount
+# csak path-translation, NEM real-mount; a bind-mountolt /sys
+# alaprétege ext4/f2fs marad → libusb fail.
+#
+# Megoldás: az Android /sys VALÓDI sysfs-mount → ezt bindeljük base-ként.
+# Erre overlay-elünk a LKL-adatainkkal a /sys/bus/usb és /sys/class
+# alpath-okon. proot rule: későbbi -b nyer az korábbi felett, így
+# specifikus alpath-on átveszi a LKL-data, a többi /sys host-from-Android.
+#
+# Ezzel: statfs("/sys")=SYSFS_MAGIC ✓ + /sys/bus/usb=LKL-fa ✓.
 SYS_MOUNT_ARGS=""
-if [ -d "${'$'}{LKL_SYS_DIR}" ]; then
-    # KRITIKUS: üres /sys mirror IS bind-mountolódik. A shim a libc opendir/
-    # open hívásokat LKL-routára küldi → élő LKL-sysfs. Az üres mount
-    # garantálja, hogy a host-Samsung-/sys NE leakelhessen vissza.
+if [ -d "${'$'}{LKL_SYS_DIR}/bus/usb" ]; then
+    SYS_MOUNT_ARGS="-b /sys"
+    # Overlay specifikus subpath-okat az LKL-mirror-ből:
+    for sub in bus/usb class/usb class/usbmisc class/hidraw devices/platform/vhci_hcd.0; do
+        if [ -d "${'$'}{LKL_SYS_DIR}/${'$'}{sub}" ]; then
+            SYS_MOUNT_ARGS="${'$'}{SYS_MOUNT_ARGS} -b ${'$'}{LKL_SYS_DIR}/${'$'}{sub}:/sys/${'$'}{sub}"
+        fi
+    done
+    echo "✓ /sys hibrid: Android-host base + LKL-overlay (bus/usb, class/usb, vhci_hcd.0)"
+elif [ -d "${'$'}{LKL_SYS_DIR}" ]; then
     SYS_MOUNT_ARGS="-b ${'$'}{LKL_SYS_DIR}:/sys"
-    echo "✓ LKL /sys bind (üres host-mirror + shim live LKL-routing)"
+    echo "⚠ LKL /sys bind (csak materialize, statfs MAGIC=ext4 → libusb 'sysfs not mounted')"
 else
     SYS_MOUNT_ARGS="-b /sys"
     echo "✗ LKL /sys mirror nincs — host /sys fallback"
