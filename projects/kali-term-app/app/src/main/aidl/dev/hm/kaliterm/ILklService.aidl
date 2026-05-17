@@ -84,4 +84,14 @@ interface ILklService {
 
     /** Aktuális shell megölése + master fd close. A reconnect-fa törlődik. */
     int killShell();
+
+    /**
+     * Phase 4 — bulk fs-tree dump. Az LKL kernel /proc /sys /dev fáját
+     * EGY Binder-hívásban szerializálva visszaadja, hogy a main process
+     * valódi diszkre materalizálja. Innen a proot bind-mountolja a
+     * chrootra → minden libc-syscall valódi fd-vel megy, NEM kell shim.
+     *
+     * @return szerializált byte[] (D/F/E markers) vagy null hiba esetén.
+     */
+    byte[] readLklTree(String root, int maxDepth, int maxBytes, int maxPerDir);
 }

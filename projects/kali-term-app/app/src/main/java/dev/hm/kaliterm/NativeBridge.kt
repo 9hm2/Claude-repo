@@ -164,4 +164,25 @@ object NativeBridge {
 
     /** Aktuálisan futó shell-t SIGTERM-mel megöli + master fd close. */
     external fun nativeLklKillShell(): Int
+
+    /**
+     * Phase 4 — bulk fs-tree dump. Az LKL kernel fájlrendszer egy alkönyvtárát
+     * (pl. "/proc") rekurzív walk-kal szerializálja EGY byte[]-be:
+     *
+     *   'D\n' <path> '\n'                       — directory
+     *   'F\n' <path> '\n' <size> '\n' <bytes> '\n'  — file
+     *   'E\n'                                   — end marker
+     *
+     * A main process ezt parse-olja és valódi diszk-fájlként materializálja.
+     * Innen a proot bind-mountolja a chrootra → minden libc/libsystemd hívás
+     * VALÓDI fd-vel megy (nincs shim, nincs `dirfd >= 0` assertion).
+     *
+     * @param root  pl. "/proc", "/sys", "/dev"
+     * @param maxDepth  rekurzió-mélység (5 = bőséges)
+     * @param maxBytes  max output méret (4 MB = bőséges)
+     * @param maxPerDir  per-directory entry-cap (64 = elég)
+     */
+    external fun nativeLklReadTree(
+        root: String, maxDepth: Int, maxBytes: Int, maxPerDir: Int,
+    ): ByteArray?
 }

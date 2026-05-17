@@ -370,134 +370,66 @@ class KaliShellService : Service() {
             return null
         }
 
-        // /proc — ÜRES mirror-mappa. A shim opendir/readdir + open/read mind
-        // INTERCEPT-elve, az LKL-control-socketen át élő-listingot ad. A proot
-        // bind-mountolja az üres mappát /proc-ra, a chrooted programok mind a
-        // shim-en át mennek. SAJÁT helyettesítés: /proc/mounts és osrelease,
-        // mert ezek host-szempontból specifikusak (proot --kernel-release,
-        // libusb 'sysfs not mounted' check).
+        // PHASE 4 — BULK MATERIALIZE: a /proc /sys /dev fát EGY Binder-
+        // hívásban szerializálva lekérjük az LKL-től, és valódi disk-
+        // fájlokként kiírjuk. A proot ezeket bind-mountolja. Minden
+        // libc-syscall valódi fd-vel megy → nincs dirfd-assertion-bug,
+        // nincs shim-hang, nincs LD_PRELOAD-routing-overhead.
         val procMirror = File(rootfs.prootTmpDir, "lkl-proc")
-        procMirror.deleteRecursively()
-        procMirror.mkdirs()
-        File(procMirror, "sys/kernel").mkdirs()
-        File(procMirror, "sys/kernel/osrelease").writeText("$osrelease\n")
-        File(procMirror, "mounts").writeText(
-            "rootfs / rootfs rw 0 0\n" +
-            "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n" +
-            "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n" +
-            "devtmpfs /dev devtmpfs rw,nosuid 0 0\n" +
-            "devpts /dev/pts devpts rw,nosuid,noexec,relatime 0 0\n"
-        )
-        File(procMirror, "self").mkdirs()
-        File(procMirror, "self/mounts").writeText(File(procMirror, "mounts").readText())
-        val procHit = 3
-        Log.i(tag, "LKL /proc empty-bind: shim adja az élő enumeráció+olvasást")
+        val sysMirror  = File(rootfs.prootTmpDir, "lkl-sys")
+        val devMirror  = File(rootfs.prootTmpDir, "lkl-dev")
+        procMirror.deleteRecursively(); procMirror.mkdirs()
+        sysMirror.deleteRecursively();  sysMirror.mkdirs()
+        devMirror.deleteRecursively();  devMirror.mkdirs()
 
-        // /sys — ÜRES mirror-mappa (shim adja az élő enumerálást és olvasást)
-        val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
-        sysMirror.deleteRecursively()
-        sysMirror.mkdirs()
-        val sysHit = 0
-        Log.i(tag, "LKL /sys empty-bind: shim adja az élő enumeráció+olvasást")
+        val procHit = materializeLklTree(iface, "/proc", procMirror, maxDepth = 4, maxPerDir = 64)
+        Log.i(tag, "LKL /proc materalizálva: $procHit entry")
+        val sysHit  = materializeLklTree(iface, "/sys",  sysMirror,  maxDepth = 5, maxPerDir = 80)
+        Log.i(tag, "LKL /sys materalizálva: $sysHit entry")
+        val devHit  = materializeLklTree(iface, "/dev",  devMirror,  maxDepth = 3, maxPerDir = 64)
+        Log.i(tag, "LKL /dev materalizálva: $devHit entry")
 
-        // /dev — TOP-szintű placeholder-listing (LKL devtmpfs top-elemei).
-        // Plus /dev/bus/usb/<bus>/<dev> a /sys/bus/usb/devices alapján.
-        val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
-        devMirror.deleteRecursively()
-        devMirror.mkdirs()
-        for (dn in listOf("bus", "bus/usb", "pts", "shm", "input", "snd", "dri", "net")) {
+        // libusb-related extra fájlok ami az LKL devtmpfs-ben nem mindig
+        // jelennek meg (Android dev /dev/bus/usb-jét magunk pótoljuk
+        // /sys/bus/usb/devices/<dev>/busnum/devnum alapján).
+        for (dn in listOf("bus/usb", "pts", "shm", "input", "snd", "dri", "net")) {
             File(devMirror, dn).mkdirs()
         }
-        // Top-szintű /dev entries az LKL devtmpfs-ből
-        val devList = runCatching { iface.listLklDir("/dev") }
-            .getOrDefault("").lines().filter { it.isNotBlank() }.take(80)
-        var devHit = 8
-        for (entry in devList) {
-            val name = entry.trim()
-            if (name == "." || name == "..") continue
-            if (name in setOf("bus", "pts", "shm", "input", "snd", "dri", "net")) continue
-            val out = File(devMirror, name)
-            if (!out.exists()) {
-                val sub = runCatching { iface.listLklDir("/dev/$name") }.getOrDefault("")
-                if (sub.isNotBlank()) out.mkdirs() else out.writeText("")
-                devHit++
-            }
-        }
         try {
-            val usbDevs = runCatching { iface.listLklDir("/sys/bus/usb/devices") }
-                .getOrDefault("").lines().filter { it.isNotBlank() }
-            for (devName in usbDevs) {
-                val busnum = runCatching { iface.readLklFile("/sys/bus/usb/devices/${devName.trim()}/busnum") }
-                    .getOrDefault("").trim()
-                val devnum = runCatching { iface.readLklFile("/sys/bus/usb/devices/${devName.trim()}/devnum") }
-                    .getOrDefault("").trim()
+            val usbDevs = File(sysMirror, "bus/usb/devices").listFiles()
+            usbDevs?.forEach { devDir ->
+                val busnum = File(devDir, "busnum").takeIf { it.exists() }?.readText()?.trim().orEmpty()
+                val devnum = File(devDir, "devnum").takeIf { it.exists() }?.readText()?.trim().orEmpty()
                 if (busnum.isNotEmpty() && devnum.isNotEmpty()) {
                     val bus3 = busnum.padStart(3, '0')
                     val dev3 = devnum.padStart(3, '0')
                     val node = File(devMirror, "bus/usb/$bus3/$dev3")
                     node.parentFile?.mkdirs()
                     runCatching { node.writeText("") }
-                    devHit++
-                }
-            }
-            Log.i(tag, "/dev/bus/usb placeholders: $devHit (incl skeleton)")
-        } catch (t: Throwable) {
-            Log.w(tag, "/dev/bus/usb populate error: ${t.message}")
-        }
-
-        // /dev/bus/usb/<busnum>/<devnum> placeholder-fa — a libusb és lsusb
-        // ezt enumerálja (USBDEVFS-szabvány). Az LKL devtmpfs nem populálja,
-        // mert normál Linuxon az udev daemon kreálja. Itt magunk csináljuk
-        // a /sys/bus/usb/devices/<bus>-<port>/{busnum,devnum} alapján.
-        try {
-            val usbDevsDir = File(sysMirror, "bus/usb/devices")
-            if (usbDevsDir.isDirectory) {
-                usbDevsDir.listFiles()?.forEach { devDir ->
-                    val busnumFile = File(devDir, "busnum")
-                    val devnumFile = File(devDir, "devnum")
-                    if (busnumFile.exists() && devnumFile.exists()) {
-                        val busnum = busnumFile.readText().trim()
-                        val devnum = devnumFile.readText().trim()
-                        if (busnum.isNotEmpty() && devnum.isNotEmpty()) {
-                            val bus3 = busnum.padStart(3, '0')
-                            val dev3 = devnum.padStart(3, '0')
-                            val node = File(devMirror, "bus/usb/$bus3/$dev3")
-                            node.parentFile?.mkdirs()
-                            runCatching { node.writeText("") }
-                            Log.d(tag, "/dev/bus/usb/$bus3/$dev3 placeholder kreálva")
-                        }
-                    }
                 }
             }
         } catch (t: Throwable) {
             Log.w(tag, "/dev/bus/usb placeholder error: ${t.message}")
         }
 
-        // /proc/mounts standard layout — a libusb a `sysfs not mounted`-ra
-        // bukik el a /proc/mounts hiányában. Kreáljuk a 4 alap mount-bejegyzést
-        // amit a chrooted bash, libusb, modprobe, df elvár.
+        // /proc/mounts standard layout — libusb 'sysfs not mounted' fix
         try {
-            val mountsFile = File(procMirror, "mounts")
-            mountsFile.parentFile?.mkdirs()
-            mountsFile.writeText(
+            File(procMirror, "mounts").writeText(
                 "rootfs / rootfs rw 0 0\n" +
                 "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n" +
                 "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n" +
                 "devtmpfs /dev devtmpfs rw,nosuid 0 0\n" +
                 "devpts /dev/pts devpts rw,nosuid,noexec,relatime 0 0\n"
             )
-            // /proc/self/mounts is — a libusb sokszor inkább erre néz
-            val selfMounts = File(procMirror, "self/mounts")
-            selfMounts.parentFile?.mkdirs()
-            selfMounts.writeText(mountsFile.readText())
-            Log.d(tag, "/proc/mounts standardizálva (sysfs/proc/devtmpfs/devpts)")
+            File(procMirror, "self").mkdirs()
+            File(procMirror, "self/mounts").writeText(File(procMirror, "mounts").readText())
         } catch (t: Throwable) {
             Log.w(tag, "/proc/mounts write error: ${t.message}")
         }
 
-        // Phase 2c.5g — Control-socket indítása a `:lkl` process-en. A chrooted
-        // shim (libkali_fuse_shim.so) ezen át éri el az LKL FS-t (open/read/
-        // stat/listdir-protokoll szöveges parancsokkal).
+        // A control-socket-et megtartjuk (a netlink-fake-elt libusb miatt
+        // még szükséges a shim-réteg, és ahhoz a control-socket be van
+        // huzalozva), de a file-op-okra már NEM hagyatkozunk rá.
         val ctrlSockPath = File(rootfs.prootTmpDir, "lkl-control.sock").absolutePath
         try {
             val rc = iface.startLklControlSocket(ctrlSockPath)
@@ -508,8 +440,79 @@ class KaliShellService : Service() {
         }
 
         Log.i(tag, "populateLklProcMirror DONE — return osrelease=$osrelease")
-
         return osrelease
+    }
+
+    /**
+     * PHASE 4 — bulk Binder + parse + materialize.
+     * Egyetlen `readLklTree(root)` hívás visszaadja a teljes /proc vagy /sys
+     * fát szerializálva, amit itt parse-olunk és valódi diszk-fájlokként
+     * kiírunk.
+     *
+     * Formátum (lásd lkl_runtime.c nativeLklReadTree):
+     *   'D\n' <path> '\n'                            — directory
+     *   'F\n' <path> '\n' <size> '\n' <bytes> '\n'   — file
+     *   'E\n'                                        — end
+     */
+    private fun materializeLklTree(
+        iface: ILklService, root: String, outRoot: File,
+        maxDepth: Int, maxPerDir: Int,
+    ): Int {
+        val buf: ByteArray = runCatching {
+            iface.readLklTree(root, maxDepth, 4 * 1024 * 1024, maxPerDir)
+        }.getOrNull() ?: return 0
+
+        var pos = 0
+        var count = 0
+        fun readByte(): Byte = buf[pos++]
+        fun readUntilNewline(): String {
+            val start = pos
+            while (pos < buf.size && buf[pos] != '\n'.code.toByte()) pos++
+            val s = String(buf, start, pos - start, Charsets.UTF_8)
+            if (pos < buf.size) pos++  // skip '\n'
+            return s
+        }
+
+        while (pos < buf.size) {
+            val t = readByte()
+            if (pos >= buf.size || buf[pos] != '\n'.code.toByte()) {
+                Log.w(tag, "materializeLklTree($root): malformed at pos=$pos")
+                break
+            }
+            pos++  // skip '\n' after type
+            when (t) {
+                'D'.code.toByte() -> {
+                    val path = readUntilNewline()
+                    val rel = path.removePrefix(root).removePrefix("/")
+                    val out = if (rel.isEmpty()) outRoot else File(outRoot, rel)
+                    out.mkdirs()
+                    count++
+                }
+                'F'.code.toByte() -> {
+                    val path = readUntilNewline()
+                    val size = readUntilNewline().toIntOrNull() ?: 0
+                    if (pos + size > buf.size) {
+                        Log.w(tag, "materializeLklTree: truncated at $path size=$size")
+                        break
+                    }
+                    val rel = path.removePrefix(root).removePrefix("/")
+                    val out = if (rel.isEmpty()) outRoot else File(outRoot, rel)
+                    out.parentFile?.mkdirs()
+                    runCatching {
+                        out.outputStream().use { it.write(buf, pos, size) }
+                    }
+                    pos += size
+                    if (pos < buf.size && buf[pos] == '\n'.code.toByte()) pos++
+                    count++
+                }
+                'E'.code.toByte() -> return count
+                else -> {
+                    Log.w(tag, "materializeLklTree: unknown type=${t.toInt().toChar()} at pos=$pos")
+                    break
+                }
+            }
+        }
+        return count
     }
 
     override fun onCreate() {

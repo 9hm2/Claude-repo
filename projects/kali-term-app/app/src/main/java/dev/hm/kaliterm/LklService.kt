@@ -219,6 +219,14 @@ class LklService : Service() {
         override fun killShell(): Int =
             try { NativeBridge.nativeLklKillShell() }
             catch (t: Throwable) { Log.e(tag, "killShell hiba", t); -1 }
+
+        override fun readLklTree(root: String, maxDepth: Int, maxBytes: Int, maxPerDir: Int): ByteArray? =
+            try {
+                NativeBridge.nativeLklReadTree(root, maxDepth, maxBytes, maxPerDir)
+            } catch (t: Throwable) {
+                Log.e(tag, "readLklTree($root) hiba", t)
+                null
+            }
     }
 
     override fun onCreate() {

@@ -1756,3 +1756,175 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklKillShell(JNIEnv *env, jobject thiz)
     if (fd > 0) close(fd);
     return 0;
 }
+
+/* ────────────────────────────────────────────────────────────────────
+ *  Phase 4 — bulk readTree: az ÖSSZES LKL /proc /sys /dev fájlt EGY
+ *  Binder hívásban szerializáljuk és a main process valódi diszkre
+ *  materalizálja. A proot ezeket bind-mountolja valódi mappákként.
+ *  Sem LD_PRELOAD shim sem control-socket nem kell file-op-okhoz —
+ *  minden libc/libsystemd hívás valódi fd-vel megy.
+ *
+ *  Format (NUL-free a kódolásban):
+ *    'D' '\n' <path> '\n'            → directory
+ *    'F' '\n' <path> '\n' <size> '\n' <bytes> '\n'  → file
+ *    'L' '\n' <path> '\n' <target> '\n'   → symlink (későbbi)
+ *    'E' '\n'                        → end
+ *
+ *  A <content_bytes> tartalmazhat bármilyen byte-ot (NUL is) — a
+ *  méretet a <size> dönti el (decimal ASCII), nem a NUL.
+ * ──────────────────────────────────────────────────────────────────── */
+
+static int is_skip_entry(const char *name)
+{
+    /* sysfs symlink-loop, slab-explosion, runtime-PM stb. */
+    static const char *skip[] = {
+        "subsystem", "driver", "module", "of_node",
+        "cwd", "exe", "root", "fd", "fdinfo", "task",
+        "slab", "cache", "power", "efi",
+        "self", "thread-self",
+        NULL
+    };
+    for (int i = 0; skip[i]; i++) {
+        if (strcmp(name, skip[i]) == 0) return 1;
+    }
+    /* all-digit nevek: /proc/<PID> process-mappák, slab számok */
+    if (name[0] >= '0' && name[0] <= '9') {
+        int ad = 1;
+        for (const char *p = name; *p; p++)
+            if (*p < '0' || *p > '9') { ad = 0; break; }
+        if (ad) return 1;
+    }
+    return 0;
+}
+
+/* Helper — append varargs printf-style into out buffer; returns -1 if cap full. */
+#define APPENDF(...) do {                                                \
+    int _n = snprintf(out + *pos, cap - *pos, __VA_ARGS__);              \
+    if (_n < 0 || (size_t)_n >= cap - *pos) return -1;                   \
+    *pos += (size_t)_n;                                                  \
+} while (0)
+
+static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
+                    int depth, int max_per_dir);
+
+static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
+                    int depth, int max_per_dir)
+{
+    if (depth <= 0) return 0;
+    if (*pos + 256 > cap) return -1;  /* nincs hely a metadatra sem */
+
+    long fd = lkl_open(path, LKL_O_RDONLY);
+    if (fd < 0) {
+        /* Nem létezik vagy nincs jogosultság — kihagyjuk. */
+        return 0;
+    }
+
+    /* Próbáljuk getdents-szel — ha működik, directory.
+     * Ha ENOTDIR (-20), file. */
+    char dirbuf[2048];
+    long bytes = lkl_call(LKL_NR_getdents64, fd,
+                          (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
+    if (bytes < 0) {
+        /* File — beolvassuk a tartalmat (max 64KB-ig). */
+        char *content = malloc(65536);
+        if (!content) { lkl_close(fd); return -1; }
+        long total = 0;
+        while (total < 65536) {
+            long r = lkl_read(fd, content + total, 65536 - total);
+            if (r <= 0) break;
+            total += r;
+        }
+        lkl_close(fd);
+
+        /* Output: F\n<path>\n<size>\n<bytes>\n */
+        if (*pos + 32 + strlen(path) + (size_t)total > cap) {
+            free(content);
+            return -1;
+        }
+        APPENDF("F\n%s\n%ld\n", path, total);
+        memcpy(out + *pos, content, (size_t)total);
+        *pos += (size_t)total;
+        if (*pos + 1 > cap) { free(content); return -1; }
+        out[(*pos)++] = '\n';
+        free(content);
+        return 0;
+    }
+
+    /* Directory — emit + collect children, then recurse */
+    APPENDF("D\n%s\n", path);
+
+    /* Gyűjtsük be a gyermek-neveket */
+    char *names[128];
+    int nn = 0;
+    while (bytes > 0 && nn < max_per_dir) {
+        long off = 0;
+        while (off < bytes && nn < max_per_dir) {
+            struct lkl_linux_dirent64 *d =
+                (struct lkl_linux_dirent64 *)(dirbuf + off);
+            if (d->d_reclen == 0) goto dirdone;
+            const char *name = d->d_name;
+            if (!(name[0] == '.' && (name[1] == '\0' ||
+                  (name[1] == '.' && name[2] == '\0'))) &&
+                !is_skip_entry(name))
+            {
+                names[nn++] = strdup(name);
+            }
+            off += d->d_reclen;
+        }
+        if (nn >= max_per_dir) break;
+        bytes = lkl_call(LKL_NR_getdents64, fd,
+                         (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
+    }
+dirdone:
+    lkl_close(fd);
+
+    /* Recurse — az allokált gyermek-neveket lépésenként szabadítjuk fel */
+    for (int i = 0; i < nn; i++) {
+        char child[1024];
+        snprintf(child, sizeof(child), "%s/%s", path, names[i]);
+        free(names[i]);
+        if (walk_lkl(child, out, pos, cap, depth - 1, max_per_dir) < 0) {
+            /* cap-túlcsordulás — felszabadítjuk a maradékot */
+            for (int j = i + 1; j < nn; j++) free(names[j]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklReadTree(
+    JNIEnv *env, jobject thiz, jstring jroot,
+    jint max_depth, jint max_bytes, jint max_per_dir)
+{
+    const char *root = (*env)->GetStringUTFChars(env, jroot, NULL);
+    if (!root) return NULL;
+
+    size_t cap = (max_bytes > 0) ? (size_t)max_bytes : (4 * 1024 * 1024);
+    char *out = malloc(cap);
+    if (!out) {
+        (*env)->ReleaseStringUTFChars(env, jroot, root);
+        return NULL;
+    }
+    size_t pos = 0;
+
+    pthread_mutex_lock(&g_lkl.lock);
+    lkl_resolve_locked();
+    if (g_lkl.running && g_lkl.syscall_fn) {
+        int mpd = (max_per_dir > 0) ? max_per_dir : 64;
+        walk_lkl(root, out, &pos, cap, max_depth > 0 ? max_depth : 5, mpd);
+    }
+    pthread_mutex_unlock(&g_lkl.lock);
+
+    /* Terminate */
+    if (pos + 2 <= cap) {
+        out[pos++] = 'E';
+        out[pos++] = '\n';
+    }
+
+    (*env)->ReleaseStringUTFChars(env, jroot, root);
+    jbyteArray arr = (*env)->NewByteArray(env, (jsize)pos);
+    if (arr) (*env)->SetByteArrayRegion(env, arr, 0, (jsize)pos, (jbyte *)out);
+    free(out);
+    return arr;
+}

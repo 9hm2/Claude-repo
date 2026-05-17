@@ -76,12 +76,16 @@ static DIR   *(*r_opendir)(const char *)                 = NULL;
  * /dev/bus: NE LKL-route! Az LKL devtmpfs-en NINCS /dev/bus/usb (udev kreálná
  * a host-Linuxon). A user-mode mirror-megközelítés szolgáltatja a placeholder-
  * fát; a shim ne menjen LKL-be — fel-bukna ENOENT-en. */
+/* PHASE 4 — A file-op route-olást KIKAPCSOLTUK. A /proc /sys /dev fa most
+ * Binder-bulk-readtree-vel valódi diszk-fájlokká van materalizálva, és
+ * a proot bind-mountolja → minden libc-syscall valódi fd-vel megy. Nincs
+ * dirfd-assertion-bug (libsystemd `dir_fd >= 0` failed), nincs shim-hang.
+ *
+ * Csak a socket()/bind()/setsockopt() netlink-fake marad aktív, hogy a
+ * libusb libudev-init ne fail-eljen -99-cel. Lásd lentebb. */
 static int is_lkl_path(const char *path)
 {
-    if (!path) return 0;
-    if (path[0] != '/') return 0;
-    if (strncmp(path, "/sys", 4) == 0 && (path[4] == '/' || path[4] == 0)) return 1;
-    if (strncmp(path, "/proc", 5) == 0 && (path[5] == '/' || path[5] == 0)) return 1;
+    (void)path;
     return 0;
 }
 
