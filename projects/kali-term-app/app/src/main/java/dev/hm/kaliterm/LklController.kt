@@ -46,6 +46,7 @@ class LklController(private val context: Context) {
     private val conn = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             Log.i(tag, "onServiceConnected: $name")
+            KaliInitLog.add("lkl-ctrl", "onServiceConnected — :lkl Binder kész")
             iface = ILklService.Stub.asInterface(service)
             connected.value = (iface != null)
             refresh()
@@ -59,13 +60,11 @@ class LklController(private val context: Context) {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             Log.i(tag, "onServiceDisconnected: $name")
+            KaliInitLog.add("lkl-ctrl", "onServiceDisconnected — :lkl process meghalt!")
             iface = null
             connected.value = false
             status.value = "(:lkl process megszűnt — bind újrahúzva " +
                            "a következő Start-ra)"
-            // BIND_AUTO_CREATE alatt az Android NEM újraindítja automatikusan
-            // a halálba ölt service-t. Manuálisan unbind, hogy a következő
-            // bind() friss process-t spawnoljon.
             try { context.unbindService(this) } catch (_: Throwable) {}
         }
     }
@@ -73,11 +72,8 @@ class LklController(private val context: Context) {
     fun bind() {
         if (iface != null) return
         Log.i(tag, "bind() — :lkl process spawn-olása")
+        KaliInitLog.add("lkl-ctrl", "bind() — startForegroundService + bindService")
         val intent = Intent(context, LklService::class.java)
-        // KRITIKUS: startForegroundService MIELŐTT bindService. A `startForeground`
-        // hívás (a Service oldalán) csak akkor "ragad rajta" a service-en, ha az
-        // STARTED állapotba kerül. Csak bindService → bind-release-kor a foreground
-        // promóció eltűnik, és a :lkl process meghal a kernel state-tel együtt.
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -86,6 +82,7 @@ class LklController(private val context: Context) {
             }
         } catch (t: Throwable) {
             Log.w(tag, "startForegroundService failed: ${t.message}")
+            KaliInitLog.add("lkl-ctrl", "startForegroundService HIBA: ${t.message}")
         }
         context.bindService(intent, conn, Context.BIND_AUTO_CREATE)
     }

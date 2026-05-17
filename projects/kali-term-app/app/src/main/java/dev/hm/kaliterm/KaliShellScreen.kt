@@ -9,6 +9,7 @@ import android.util.Log
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +19,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.Button
@@ -187,11 +191,14 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
             //   2) getOrCreateSession MAIN-szálon — a TerminalSession
             //      konstruktora `new Handler()`-t hív, ami Looper-t igényel;
             //      IO-szálon RuntimeException-t dob.
-            status = "LKL kernel mirror feltöltése (~30-40 sec első alkalommal)…"
+            status = "LKL kernel mirror feltöltése…"
+            KaliInitLog.add("ui", "prepareLklMirror (IO szál) hívás")
             withContext(Dispatchers.IO) { b.prepareLklMirror(rootfs) }
+            KaliInitLog.add("ui", "prepareLklMirror VÉGE — getOrCreateSession következik")
             status = "shell létrehozása…"
             session = b.getOrCreateSession(rootfs)
             status = "shell aktív (session=${session?.hashCode()?.toString(16)})"
+            KaliInitLog.add("ui", "session attached — terminál aktív")
             Log.i("kaliterm-shell", "session attached: $status")
         }
     }
@@ -201,6 +208,8 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
     //   .systemBarsPadding() — status/nav-bar
     //   .imePadding()        — soft-keyboard (billentyűzet fölött legyen a
     //                          terminál + extra-keys row, ne mögötte)
+    var initLogVisible by remember { mutableStateOf(true) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -215,13 +224,22 @@ fun KaliShellScreen(onBack: () -> Unit = {}) {
             OutlinedButton(onClick = onBack) { Text("← Vissza") }
             Text(
                 text = "Kali shell — $status",
+                modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
+            OutlinedButton(
+                onClick = { initLogVisible = !initLogVisible },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+            ) { Text(if (initLogVisible) "Log el" else "Log mut", fontSize = 11.sp) }
         }
         if (!ready) {
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        if (initLogVisible) {
+            Spacer(Modifier.height(8.dp))
+            InitLogPanel()
         }
         Spacer(Modifier.height(8.dp))
 
@@ -404,5 +422,73 @@ private fun makeViewClient(
     }
     override fun logStackTrace(t: String?, e: Exception?) {
         Log.e(t ?: tag, "", e)
+    }
+}
+
+/**
+ * Init-log overlay panel — sor-sor-ra mutatja a bind/init folyamatot,
+ * és van egy "Másol" gomb a teljes log clipboard-ra tételéhez. Cél:
+ * fagyás esetén a user pontosan lássa MELYIK lépésnél akadt el, és
+ * másolható szövegként meg tudja osztani.
+ *
+ * Auto-scroll a legutóbbi sorra, hogy mindig a friss bejegyzés látszódjon.
+ */
+@Composable
+private fun InitLogPanel() {
+    val ctx = LocalContext.current
+    val lines = KaliInitLog.lines
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(lines.size) {
+        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.size - 1)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(160.dp)
+            .background(Color(0xFF1A1A1A))
+            .padding(4.dp),
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            items(lines.size) { idx ->
+                val line = lines[idx]
+                val color = when {
+                    "HIBA" in line || "TIMEOUT" in line || "fagy" in line -> Color(0xFFFF6B6B)
+                    "OK" in line || "DONE" in line || "rc=0" in line      -> Color(0xFF7CFC7C)
+                    "spawn" in line || "bind" in line                     -> Color(0xFFFFE066)
+                    else                                                  -> Color(0xFFCCCCCC)
+                }
+                Text(
+                    text = line,
+                    fontSize = 10.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = color,
+                )
+            }
+        }
+
+        Button(
+            onClick = {
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                val all = KaliInitLog.toMultilineString()
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("kaliterm-init-log", all))
+                android.widget.Toast.makeText(ctx,
+                    "Init-log clipboard-ra másolva (${KaliInitLog.lines.size} sor)",
+                    android.widget.Toast.LENGTH_SHORT).show()
+            },
+            modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF333366),
+                contentColor = Color.White,
+            ),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+        ) {
+            Text("Másol", fontSize = 10.sp)
+        }
     }
 }

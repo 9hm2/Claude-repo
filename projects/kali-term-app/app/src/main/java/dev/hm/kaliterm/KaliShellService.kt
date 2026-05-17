@@ -95,16 +95,13 @@ class KaliShellService : Service() {
                 "PATH=/system/bin:/system/xbin",
             )
             Log.i(tag, "TerminalSession létrehozása (PHASE 3: shell a :lkl-ben)")
-            // PHASE 3 arch-refaktor: a proot+bash NEM a main process-ben
-            // forkolódik (Termux TerminalSession.JNI.createSubprocess), hanem
-            // a `:lkl` process-ben. Ennek köszönhetően a Samsung BBA / OOM-
-            // killer a main process kilövésekor a shell-t NEM öli vele
-            // együtt — a `:lkl` foreground notification mind a kernelt
-            // mind a shell-t együtt védi.
+            KaliInitLog.add("shell-svc", "TerminalSession létrehozás START")
             val iface = lklIface
-                ?: throw IllegalStateException("LklService nem bind-elt — populateLklProcMirror nem futott le?")
+                ?: run {
+                    KaliInitLog.add("shell-svc", "HIBA: lklIface null — bind nem futott le")
+                    throw IllegalStateException("LklService nem bind-elt — populateLklProcMirror nem futott le?")
+                }
 
-            // Először nézzük meg, van-e már futó shell (reconnect-flow).
             var pfd: android.os.ParcelFileDescriptor? = runCatching {
                 iface.getCurrentShell()
             }.getOrNull()
@@ -112,6 +109,8 @@ class KaliShellService : Service() {
 
             if (pfd == null) {
                 Log.i(tag, "új shell spawnolása a :lkl process-ben")
+                KaliInitLog.add("shell-svc", "startKaliShell hívás (forkpty+execve a :lkl-ben)")
+                val ts = System.currentTimeMillis()
                 pfd = iface.startKaliShell(
                     /* shellPath = */ rootfs.launchSh.absolutePath,
                     /* cwd       = */ rootfs.bundleDir.absolutePath,
@@ -119,11 +118,16 @@ class KaliShellService : Service() {
                     /* env       = */ env,
                     /* cols      = */ 80,
                     /* rows      = */ 24,
-                ) ?: throw IllegalStateException("startKaliShell visszatért null-lal — :lkl forkpty fail")
+                ) ?: run {
+                    KaliInitLog.add("shell-svc", "HIBA: startKaliShell null — forkpty fail")
+                    throw IllegalStateException("startKaliShell visszatért null-lal — :lkl forkpty fail")
+                }
                 shellPid = iface.getCurrentShellPid()
+                KaliInitLog.add("shell-svc", "shell spawn OK: pid=$shellPid (${System.currentTimeMillis()-ts}ms)")
                 Log.i(tag, "shell spawn OK: pid=$shellPid (:lkl-ben), PTY-fd dup-olva main-be")
             } else {
                 Log.i(tag, "reconnect a meglévő :lkl-shell-hez: pid=$shellPid")
+                KaliInitLog.add("shell-svc", "reconnect meglévő :lkl-shell-hez (pid=$shellPid)")
             }
 
             val masterFd = pfd.detachFd()  // PFD ownership-transfer a TerminalSession-höz
@@ -324,6 +328,7 @@ class KaliShellService : Service() {
     // Companion object alább a fájl végén (merge-elve a NOTIF_* konstansokkal).
 
     private fun populateLklProcMirror(rootfs: RootfsManager): String? {
+        KaliInitLog.add("shell-svc", "populateLklProcMirror START")
         // Bind-el ha még nincs. ELŐSZÖR startForegroundService — ezzel STARTED
         // állapotba kerül a :lkl, és foreground-notification-nel él tovább
         // akkor is, ha minden bind elengedjük. Csak ezután bind-elünk a
@@ -338,8 +343,10 @@ class KaliShellService : Service() {
                     startService(intent)
                 }
                 bindService(intent, lklConn, Context.BIND_AUTO_CREATE)
+                KaliInitLog.add("shell-svc", "LklService start+bind initiated")
             } catch (t: Throwable) {
                 Log.w(tag, "LklService start/bind failed: ${t.message}")
+                KaliInitLog.add("shell-svc", "LklService start/bind HIBA: ${t.message}")
                 return null
             }
         }
@@ -350,11 +357,15 @@ class KaliShellService : Service() {
         }
         val iface = lklIface ?: run {
             Log.w(tag, "LKL bind timeout — fallback host-/proc-ra")
+            KaliInitLog.add("shell-svc", "LKL bind TIMEOUT (3 sec) — fallback host /proc-ra")
             return null
         }
+        KaliInitLog.add("shell-svc", "LklService bind OK (${System.currentTimeMillis() - (deadline - 3000)}ms)")
         // Indítsd a kernelt ha még nem fut. A startKernel idempotens
         // (-EALREADY-t ad ha már fut).
+        val t0 = System.currentTimeMillis()
         runCatching { iface.startKernel() }.onSuccess { rc ->
+            KaliInitLog.add("shell-svc", "startKernel rc=$rc (${System.currentTimeMillis()-t0}ms)")
             if (rc == 0) {
                 Log.i(tag, "LKL kernel boot — várok 500ms a sysfs init-re")
                 Thread.sleep(500)
@@ -367,8 +378,10 @@ class KaliShellService : Service() {
             .getOrDefault("").trim()
         if (osrelease.isEmpty()) {
             Log.w(tag, "LKL osrelease üres — kernel nem ad /proc-fájlokat")
+            KaliInitLog.add("shell-svc", "osrelease ÜRES — LKL kernel nem ad /proc-ot")
             return null
         }
+        KaliInitLog.add("shell-svc", "LKL osrelease = $osrelease")
 
         // PHASE 4 — BULK MATERIALIZE: a /proc /sys /dev fát EGY Binder-
         // hívásban szerializálva lekérjük az LKL-től, és valódi disk-
@@ -382,12 +395,15 @@ class KaliShellService : Service() {
         sysMirror.deleteRecursively();  sysMirror.mkdirs()
         devMirror.deleteRecursively();  devMirror.mkdirs()
 
+        var tt = System.currentTimeMillis()
         val procHit = materializeLklTree(iface, "/proc", procMirror, maxDepth = 4, maxPerDir = 64)
-        Log.i(tag, "LKL /proc materalizálva: $procHit entry")
+        KaliInitLog.add("shell-svc", "/proc materalizálva: $procHit entry (${System.currentTimeMillis()-tt}ms)")
+        tt = System.currentTimeMillis()
         val sysHit  = materializeLklTree(iface, "/sys",  sysMirror,  maxDepth = 5, maxPerDir = 80)
-        Log.i(tag, "LKL /sys materalizálva: $sysHit entry")
+        KaliInitLog.add("shell-svc", "/sys materalizálva: $sysHit entry (${System.currentTimeMillis()-tt}ms)")
+        tt = System.currentTimeMillis()
         val devHit  = materializeLklTree(iface, "/dev",  devMirror,  maxDepth = 3, maxPerDir = 64)
-        Log.i(tag, "LKL /dev materalizálva: $devHit entry")
+        KaliInitLog.add("shell-svc", "/dev materalizálva: $devHit entry (${System.currentTimeMillis()-tt}ms)")
 
         // libusb-related extra fájlok ami az LKL devtmpfs-ben nem mindig
         // jelennek meg (Android dev /dev/bus/usb-jét magunk pótoljuk
@@ -435,11 +451,14 @@ class KaliShellService : Service() {
             val rc = iface.startLklControlSocket(ctrlSockPath)
             if (rc == 0) Log.i(tag, "LKL control socket at $ctrlSockPath")
             else Log.w(tag, "startLklControlSocket rc=$rc")
+            KaliInitLog.add("shell-svc", "control-socket rc=$rc")
         } catch (t: Throwable) {
             Log.w(tag, "startLklControlSocket failed: ${t.message}")
+            KaliInitLog.add("shell-svc", "control-socket HIBA: ${t.message}")
         }
 
         Log.i(tag, "populateLklProcMirror DONE — return osrelease=$osrelease")
+        KaliInitLog.add("shell-svc", "populateLklProcMirror DONE")
         return osrelease
     }
 
