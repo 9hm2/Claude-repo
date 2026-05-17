@@ -174,35 +174,11 @@ class KaliShellService : Service() {
             // a sentinel-fájl content-check ha a kritikus usb1/busnum üres,
             // ÚJRA-RUN-oljuk a populate-et.
             //
-            // SENTINEL-LIST (mindegyik kötelező a cache-hit-hez):
-            //  - usb1/busnum: alap walk_lkl leaf-fix (commit 2de3a10+)
-            //  - usb1/uevent: libudev-discovery fix (commit cd47bdc+)
-            //  - usb1/subsystem: SYMLINK libudev-subsystem-match fix (current commit)
-            // Ha bármelyik hiányzik / üres / nem-symlink (subsystem), az APK
-            // frissebb mint a materialize → kötelező re-populate.
-            if (lklProcOsrelease != null) {
-                val sUsbBusnum  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
-                val sUevent     = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/uevent")
-                val sSubsystem  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/subsystem")
-                val ssIsLink    = try {
-                    java.nio.file.Files.isSymbolicLink(sSubsystem.toPath())
-                } catch (_: Throwable) { false }
-                val ok = sUsbBusnum.exists() && sUsbBusnum.length() > 0
-                      && sUevent.exists()   && sUevent.length()   > 0
-                      && ssIsLink
-                if (ok) {
-                    KaliInitLog.add("shell-svc", "prepareLklMirror skip — cache OK (busnum+uevent+subsystem-link)")
-                    return
-                } else {
-                    val why = when {
-                        !sSubsystem.exists() || !ssIsLink -> "subsystem nem symlink"
-                        !sUevent.exists() || sUevent.length() == 0L -> "uevent hiány"
-                        else -> "busnum hiány"
-                    }
-                    KaliInitLog.add("shell-svc", "cache invalid ($why) — RE-POPULATE (frissebb APK?)")
-                    lklProcOsrelease = null
-                }
-            }
+            // Cache-check most a populateLklProcMirror-ban van (a bind után),
+            // hogy a live LKL-state vs cached materialize-t össze tudjuk
+            // hasonlítani — különben a USB-attach-detach változások nem
+            // detektálódnának, és a stale cache miatt a chrooted lsusb a
+            // régi device-set-et látná.
             lklProcOsrelease = populateLklProcMirror(rootfs)
         }
 
@@ -424,6 +400,45 @@ class KaliShellService : Service() {
             return null
         }
         KaliInitLog.add("shell-svc", "LKL osrelease = $osrelease")
+
+        // CACHE-CHECK (bind után, materialize előtt) — ha a cached materialize
+        // még érvényes (file-integrity + LIVE USB-list match), SKIP a teljes
+        // walk-ot. Ezzel USB-attach detect-en MINDIG re-populate-elünk, anélkül
+        // hogy a változatlan-set esetén feleslegesen 300ms+ walkolnánk.
+        if (lklProcOsrelease != null) {
+            val sUsbBusnum  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
+            val sUevent     = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/uevent")
+            val sSubsystem  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/subsystem")
+            val ssIsLink    = try {
+                java.nio.file.Files.isSymbolicLink(sSubsystem.toPath())
+            } catch (_: Throwable) { false }
+
+            // Cheap Binder hívás: az LKL aktuális /sys/bus/usb/devices listája
+            val liveUsbDevs = runCatching {
+                iface.listLklDir("/sys/bus/usb/devices")
+            }.getOrDefault("").lines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .sorted()
+            val cachedUsbDevs = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices")
+                .list()?.toList()?.sorted() ?: emptyList()
+
+            val integrityOk = sUsbBusnum.exists() && sUsbBusnum.length() > 0
+                          && sUevent.exists()   && sUevent.length()   > 0
+                          && ssIsLink
+            val usbListSame = liveUsbDevs.isNotEmpty() && cachedUsbDevs == liveUsbDevs
+
+            if (integrityOk && usbListSame) {
+                KaliInitLog.add("shell-svc", "cache OK (USB-list match: ${liveUsbDevs.size} entry) — SKIP walk")
+                return osrelease  // a cached materialize jó, NEM walkolunk újra
+            }
+            val why = when {
+                !integrityOk -> "integrity-check fail (sentinel hiány)"
+                !usbListSame -> "USB device-set változott (cached=$cachedUsbDevs live=$liveUsbDevs)"
+                else -> "ismeretlen"
+            }
+            KaliInitLog.add("shell-svc", "cache INVALID ($why) — full RE-POPULATE")
+        }
 
         // PHASE 4 — BULK MATERIALIZE: a /proc /sys /dev fát EGY Binder-
         // hívásban szerializálva lekérjük az LKL-től, és valódi disk-
