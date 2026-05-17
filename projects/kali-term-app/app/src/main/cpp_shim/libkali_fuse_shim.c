@@ -215,7 +215,7 @@ int open(const char *path, int flags, ...)
     if (!is_lkl_path(path)) {
         int rc = r_open(path, flags, mode);
         if (is_virt_fs_path(path))
-            fprintf(stderr, "[shim open] path=%s flags=0x%x rc=%d\n", path, flags, rc);
+            SHIM_DBG("[shim open] path=%s flags=0x%x rc=%d\n", path, flags, rc);
         return rc;
     }
 
@@ -257,7 +257,7 @@ int openat(int dirfd, const char *path, int flags, ...)
     }
     int rc = r_openat(dirfd, path, flags, mode);
     if (path && is_virt_fs_path(path))
-        fprintf(stderr, "[shim openat] dirfd=%d path=%s flags=0x%x rc=%d\n",
+        SHIM_DBG("[shim openat] dirfd=%d path=%s flags=0x%x rc=%d\n",
                 dirfd, path, flags, rc);
     return rc;
 }
@@ -378,7 +378,7 @@ int stat(const char *path, struct stat *st)
     INIT(stat);
     int rc = r_stat(path, st);
     if (is_virt_fs_path(path))
-        fprintf(stderr, "[shim stat] path=%s rc=%d\n", path, rc);
+        SHIM_DBG("[shim stat] path=%s rc=%d\n", path, rc);
     return rc;
 }
 
@@ -387,7 +387,7 @@ int lstat(const char *path, struct stat *st)
     INIT(lstat);
     int rc = r_lstat(path, st);
     if (is_virt_fs_path(path))
-        fprintf(stderr, "[shim lstat] path=%s rc=%d\n", path, rc);
+        SHIM_DBG("[shim lstat] path=%s rc=%d\n", path, rc);
     return rc;
 }
 
@@ -414,7 +414,7 @@ int access(const char *path, int mode)
     INIT(access);
     int rc = r_access(path, mode);
     if (is_virt_fs_path(path))
-        fprintf(stderr, "[shim access] path=%s mode=0x%x rc=%d\n", path, mode, rc);
+        SHIM_DBG("[shim access] path=%s mode=0x%x rc=%d\n", path, mode, rc);
     return rc;
 }
 
@@ -441,9 +441,9 @@ DIR *opendir(const char *path)
     INIT(opendir);
     if (!is_lkl_path(path)) return r_opendir(path);
 
-    fprintf(stderr, "[shim opendir LKL] %s\n", path);
+    SHIM_DBG("[shim opendir LKL] %s\n", path);
     int sock = sock_connect();
-    if (sock < 0) { fprintf(stderr, "[shim opendir] sock fail → real\n"); return r_opendir(path); }
+    if (sock < 0) { SHIM_DBG("[shim opendir] sock fail → real\n"); return r_opendir(path); }
     char req[1280];
     int rn = snprintf(req, sizeof(req), "LISTDIR %s\n", path);
     if (write(sock, req, rn) != rn) {
@@ -452,7 +452,7 @@ DIR *opendir(const char *path)
     char first[128];
     if (read_line(sock, first, sizeof(first)) <= 0 ||
         strncmp(first, "OK", 2) != 0) {
-        fprintf(stderr, "[shim opendir] LKL ERR: %s\n", first);
+        SHIM_DBG("[shim opendir] LKL ERR: %s\n", first);
         close(sock); errno = ENOENT; return NULL;
     }
 
@@ -664,7 +664,7 @@ int statfs(const char *path, struct statfs *buf)
      * problémához. Ha ez a sor a stderr-ben látható lsusb futtatáskor,
      * a statfs override működik. Ha nem, libusb a syscall()-t direkten
      * használja vagy statvfs-t (POSIX) hív. */
-    fprintf(stderr, "[shim statfs] path=%s rc=%d magic_override=0x%lx\n",
+    SHIM_DBG("[shim statfs] path=%s rc=%d magic_override=0x%lx\n",
             path ? path : "(null)", rc, magic);
     if (rc == 0 && buf && magic != 0) {
         buf->f_type = (typeof(buf->f_type))magic;
