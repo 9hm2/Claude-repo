@@ -45,12 +45,22 @@ if [[ ! -f "${KEYRING_FILE}" ]]; then
   curl -fsSL --retry 4 --retry-delay 2 \
     -o "${DL_DIR}/kali-archive-key.asc" \
     https://archive.kali.org/archive-key.asc
-  # `gpg --dearmor` raw-OpenPGP-packet stream-et ad — EZT VÁRJA a debootstrap
-  # `--keyring`-je ÉS a modern apt `sqv` verifikátora `/etc/apt/trusted.gpg.d/`-ben.
-  # A korábbi `gpg --import` GPG-native keybox-formátumot adott, amit az új
-  # apt 'unsupported filetype'-tal elutasít.
-  echo "[kali] dearmor → binary keyring"
-  gpg --dearmor < "${DL_DIR}/kali-archive-key.asc" > "${KEYRING_FILE}"
+  # FONTOS: a modern apt sqv verifikátora raw OpenPGP-packet streamet vár
+  # a /etc/apt/trusted.gpg.d/ fájlokban. A `gpg --dearmor` gnupg 2.4+-on
+  # KEYBOX (KBXf) formátumot ad — ezt az sqv elutasítja "Missing key"-vel.
+  # Megoldás: import → temp-keyring → export (raw OpenPGP packets).
+  echo "[kali] gpg import + export → raw OpenPGP packets keyring"
+  TEMP_KEYRING="$(mktemp -d)/temp-keyring.gpg"
+  gpg --no-default-keyring --keyring "${TEMP_KEYRING}" \
+      --import < "${DL_DIR}/kali-archive-key.asc"
+  gpg --no-default-keyring --keyring "${TEMP_KEYRING}" \
+      --export > "${KEYRING_FILE}"
+  rm -rf "$(dirname "${TEMP_KEYRING}")"
+  # Verify raw OpenPGP packets format (NEM keybox):
+  head -c 4 "${KEYRING_FILE}" | od -An -c | grep -q "KBXf" && {
+    echo "[kali] HIBA: keyring KBXf-formátum (keybox), apt sqv NEM fogadja el" >&2
+    exit 3
+  } || true
   ls -lh "${KEYRING_FILE}"
 fi
 
