@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.system.Os
 import android.util.Log
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
@@ -473,27 +474,36 @@ class KaliShellService : Service() {
         // /sys/bus/usb/devices/usb1 stub — proot bind később (csak ha LKL
         // valódi root-hub-bejegyzéssel rendelkezik).
 
-        // libusb-related extra fájlok ami az LKL devtmpfs-ben nem mindig
-        // jelennek meg (Android dev /dev/bus/usb-jét magunk pótoljuk
-        // /sys/bus/usb/devices/<dev>/busnum/devnum alapján).
-        for (dn in listOf("bus/usb", "pts", "shm", "input", "snd", "dri", "net")) {
-            File(devMirror, dn).mkdirs()
-        }
+        // libusb 'sysfs not mounted' fix — statfs(/sys) MAGIC-check (SYSFS_MAGIC
+         // = 0x62656572) failel a bind-mountolt ext4 dirre. libusb fallback-el
+         // usbfs-re, ami a /dev/bus/usb/B/D fájlokból olvas 18 byte USB device
+         // descriptort. Ezért MOST KIÍRJUK az igazi descriptor byte-okat
+         // a placeholder fájlokba (a /sys/bus/usb/devices/X/descriptors-ből).
         try {
             val usbDevs = File(sysMirror, "bus/usb/devices").listFiles()
             usbDevs?.forEach { devDir ->
-                val busnum = File(devDir, "busnum").takeIf { it.exists() }?.readText()?.trim().orEmpty()
-                val devnum = File(devDir, "devnum").takeIf { it.exists() }?.readText()?.trim().orEmpty()
-                if (busnum.isNotEmpty() && devnum.isNotEmpty()) {
+                val name = devDir.name
+                if (':' in name) return@forEach  // interface (skip)
+                val busnum  = File(devDir, "busnum") .takeIf { it.exists() }?.readText()?.trim().orEmpty()
+                val devnum  = File(devDir, "devnum") .takeIf { it.exists() }?.readText()?.trim().orEmpty()
+                val descFile = File(devDir, "descriptors")
+                if (busnum.isNotEmpty() && devnum.isNotEmpty() && descFile.exists()) {
                     val bus3 = busnum.padStart(3, '0')
                     val dev3 = devnum.padStart(3, '0')
                     val node = File(devMirror, "bus/usb/$bus3/$dev3")
                     node.parentFile?.mkdirs()
-                    runCatching { node.writeText("") }
+                    runCatching {
+                        // Másoljuk át a descriptors raw byte-okat — libusb
+                        // usbfs-fallback exact-18-byte read-jét kielégíti.
+                        node.writeBytes(descFile.readBytes())
+                        Os.chmod(node.absolutePath, "644".toInt(8))
+                    }
+                    KaliInitLog.add("usb-dev", "/dev/bus/usb/$bus3/$dev3 ← descriptors (${descFile.length()}B)")
                 }
             }
         } catch (t: Throwable) {
-            Log.w(tag, "/dev/bus/usb placeholder error: ${t.message}")
+            Log.w(tag, "/dev/bus/usb descriptor-copy error: ${t.message}")
+            KaliInitLog.add("usb-dev", "HIBA: descriptor copy: ${t.message}")
         }
 
         // /proc/mounts standard layout — libusb 'sysfs not mounted' fix
