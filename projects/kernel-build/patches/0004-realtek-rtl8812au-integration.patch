@@ -1,0 +1,40 @@
+From: kaliterm-build <noreply@kaliterm>
+Date: Sun, 17 May 2026 19:55:00 +0000
+Subject: [PATCH] realtek: integrate out-of-tree rtl8812au (morrownr fork)
+
+Az aircrack-ng/morrownr 8812au driver hozzáadása a kernel-tree-be a
+`drivers/net/wireless/realtek/rtl8812au/` subdirektoriéba. A mainline
+`rtl8xxxu` driver NEM támogatja a RTL8812AU/RTL8821AU/RTL8811AU chipseteket
+(2357:011e TP-Link Archer T2U Plus, Alfa AWUS036ACH, stb.) — az out-of-tree
+driver ezt ellátja.
+
+A driver source-t a kaliterm-build scripts/fetch-rtl8812au.sh másolja be
+a rtl8812au-cache-ből a kernel-tree-be (rsync); a patch csak a parent
+Kconfig + Makefile-be fűzi be a subdirektoriát.
+
+Az upstream Makefile `KERNELRELEASE`-érzékeny: in-tree build-kor a
+`$(MODULE_NAME)-y := $(rtk_core) ...` + `obj-$(CONFIG_RTL8812AU) := 8812au.o`
+path-on megy, így nem kell külön Kbuild fájl.
+
+Signed-off-by: kaliterm-build <noreply@kaliterm>
+---
+ drivers/net/wireless/realtek/Kconfig  | 1 +
+ drivers/net/wireless/realtek/Makefile | 1 +
+ 2 files changed, 2 insertions(+)
+
+--- a/drivers/net/wireless/realtek/Kconfig
++++ b/drivers/net/wireless/realtek/Kconfig
+@@ -17,5 +17,6 @@ if WLAN_VENDOR_REALTEK
+ source "drivers/net/wireless/realtek/rtl8xxxu/Kconfig"
+ source "drivers/net/wireless/realtek/rtw88/Kconfig"
+ source "drivers/net/wireless/realtek/rtw89/Kconfig"
++source "drivers/net/wireless/realtek/rtl8812au/Kconfig"
+
+ endif # WLAN_VENDOR_REALTEK
+--- a/drivers/net/wireless/realtek/Makefile
++++ b/drivers/net/wireless/realtek/Makefile
+@@ -10,3 +10,4 @@ obj-$(CONFIG_RTL8XXXU)		+= rtl8xxxu/
+ obj-$(CONFIG_RTW88)		+= rtw88/
+ obj-$(CONFIG_RTW89)		+= rtw89/
+
++obj-$(CONFIG_RTL8812AU)		+= rtl8812au/

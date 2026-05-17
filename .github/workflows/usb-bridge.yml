@@ -1,0 +1,57 @@
+name: USB bridge
+
+on:
+  # A push trigger minden branch-re fut, path filter szerint — így csak
+  # akkor indul, ha a friss commit ténylegesen érintette ezt a projektet.
+  # A pull_request trigger a teljes PR-diff-et nézi (merge-base óta), nem
+  # az aktuális commit-ot, ami félrevezető rebuild-eket okozna; ezért nem
+  # használjuk.
+  push:
+    paths:
+      - 'projects/usb-bridge/**'
+      - '.github/workflows/usb-bridge.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: projects/usb-bridge
+
+jobs:
+  host:
+    name: USB bridge build (host x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libusb-1.0-0-dev
+
+      - name: Build
+        run: make verbose=1
+
+      - name: Inspect binary
+        run: |
+          ls -lh out/kaliterm-usb-bridge
+          file out/kaliterm-usb-bridge
+          ldd out/kaliterm-usb-bridge | grep libusb
+
+      - name: Sanity test (start + immediate SIGTERM)
+        run: |
+          ./out/kaliterm-usb-bridge --socket=/tmp/kt.sock &
+          PID=$!
+          # Pár ms-ot adunk a listenre, majd SIGTERM
+          sleep 0.5
+          kill -TERM $PID
+          wait $PID
+          test ! -e /tmp/kt.sock  # tisztán kilépett és levette a socketet
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaliterm-usb-bridge-x86_64
+          path: projects/usb-bridge/out/kaliterm-usb-bridge
+          if-no-files-found: error

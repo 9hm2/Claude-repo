@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        USB host support deklarálva, de hardver-igényt nem tesszük kötelezővé
+        (egyes tabletek nem jelzik a host-képességet feature-ként, mégis tudják).
+    -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
+    <!-- A chrooted Kali bash hálózatot az Android-kernel-szocketstack-en
+         keresztül használja (proot ptrace-transparent); ehhez kell a netezés-
+         permission. NÉLKÜLE apt update / curl / ping / DNS-lookup mind fail. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- A :lkl process foreground service-ként fut, hogy az Android NE lője
+         ki a kernel state-tel együtt. targetSdk=28 mellett POST_NOTIFICATIONS
+         implicit garantált, így nem kell külön kérelmezni. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <application
+        android:name=".KaliApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Kaliterm"
+        tools:targetApi="31">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Kaliterm"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Az LKL kernel egy KÜLÖN OS process-ben fut (`:lkl`). Indok:
+            az LKL upstream egy-shot kernel — lkl_sys_halt után új
+            lkl_start_kernel ugyanabban a processben crash-eli az appot.
+            A `:lkl` process kill-elésével a kernel state teljesen
+            felszabadul, és új bind friss kernel-state-tel jön vissza.
+            Részletek: LklService.kt.
+        -->
+        <service
+            android:name=".LklService"
+            android:exported="false"
+            android:process=":lkl" />
+
+        <!--
+            Kali shell session (Termux TerminalSession) Service-ből.
+            Ellentétben az LklService-szel, ez NEM külön process — a forkolt
+            shell a Service lifecycle-jához kötve él, és a UI bind-el ide
+            a session event-ekért. Termux `TermuxService` mintát követjük.
+        -->
+        <service
+            android:name=".KaliShellService"
+            android:exported="false" />
+    </application>
+
+</manifest>

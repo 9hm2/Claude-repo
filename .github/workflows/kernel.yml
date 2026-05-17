@@ -1,0 +1,85 @@
+name: Kernel (LKL) build
+
+on:
+  # A push trigger minden branch-re fut, path filter szerint — így csak
+  # akkor indul, ha a friss commit ténylegesen érintette ezt a projektet.
+  # Szándékosan nem használunk pull_request triggert: az a teljes
+  # PR-diff-et nézi a merge-base óta, nem az aktuális commitot, ami
+  # félrevezető rebuild-eket okozna.
+  push:
+    paths:
+      - 'projects/kernel-build/**'
+      - '.github/workflows/kernel.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: projects/kernel-build
+
+jobs:
+  x86_64:
+    name: LKL build (x86_64 host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            xz-utils ca-certificates curl git pkg-config
+
+      - name: Build LKL library (x86_64)
+        run: make lkl-x86_64
+
+      - name: Inspect output
+        run: |
+          ls -lh out/x86_64/
+          file out/x86_64/* || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lkl-x86_64
+          path: projects/kernel-build/out/x86_64/
+          if-no-files-found: error
+
+  arm64:
+    name: LKL build (arm64 cross)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies (incl. arm64 cross toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            xz-utils ca-certificates curl git pkg-config \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross
+
+      - name: Build LKL library (arm64 host cross)
+        env:
+          CROSS_COMPILE: aarch64-linux-gnu-
+        run: make lkl-arm64
+
+      - name: Inspect output
+        run: |
+          ls -lh out/arm64/
+          file out/arm64/* || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lkl-arm64
+          path: projects/kernel-build/out/arm64/
+          if-no-files-found: error
+
+# Megjegyzés: az android-arm64 (Bionic) build átkerült a
+# `.github/workflows/kali-term-release.yml`-be, ahol egy job-láncban
+# közvetlenül összekötjük az APK build-jével — így mindig friss LKL-lel
+# épül a telepíthető APK. Ez a workflow csak a developer-reference
+# x86_64 + arm64 (glibc) build-eket tartja, mint összehasonlítási alap.

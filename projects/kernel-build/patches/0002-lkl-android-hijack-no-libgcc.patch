@@ -1,0 +1,38 @@
+Subject: [PATCH] tools/lkl: drop -lgcc for Android hijack/zpoline (use compiler-rt)
+
+LKL's LD_PRELOAD syscall-hijack helper libraries explicitly link against
+`-lgcc` on aarch64 (and arm, riscv64) so they have the compiler builtins
+they need for things like 64-bit division on 32-bit targets, complex
+arithmetic, atomic helpers, etc. The Android NDK does NOT ship libgcc —
+modern Android uses clang's compiler-rt builtins instead. The link step
+fails with:
+
+  ld.lld: error: unable to find library -lgcc
+
+clang on the NDK target adds compiler-rt builtins automatically when it
+acts as the linker driver, even when `-nodefaultlibs` is set, via the
+implicit `-rtlib=compiler-rt`. So on Android we simply omit `-lgcc` from
+the hijack/zpoline LDLIBS and let clang's default rtlib handle the
+builtins; `-lc` is still added so libc gets pulled in for the host stub.
+
+---
+ tools/lkl/Targets | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/tools/lkl/Targets b/tools/lkl/Targets
+--- a/tools/lkl/Targets
++++ b/tools/lkl/Targets
+@@ -8,9 +8,13 @@ libs-$(LKL_HOST_CONFIG_POSIX) += lib/hijack/liblkl-zpoline
+ endif
+ LDFLAGS_lib/hijack/liblkl-hijack-y += -shared -nodefaultlibs
+ LDLIBS_lib/hijack/liblkl-hijack-y += -ldl
++# NDK doesn't ship libgcc; clang's compiler-rt provides the builtins.
++ifneq ($(LKL_HOST_CONFIG_ANDROID),y)
+ LDLIBS_lib/hijack/liblkl-hijack-$(LKL_HOST_CONFIG_ARM) += -lgcc -lc
+ LDLIBS_lib/hijack/liblkl-hijack-$(LKL_HOST_CONFIG_AARCH64) += -lgcc -lc
+ LDLIBS_lib/hijack/liblkl-hijack-$(LKL_HOST_CONFIG_RISCV64) += -lgcc -lc
++endif
++LDLIBS_lib/hijack/liblkl-hijack-$(LKL_HOST_CONFIG_ANDROID) += -lc
+ LDLIBS_lib/hijack/liblkl-hijack-$(LKL_HOST_CONFIG_I386) += -lc_nonshared
+
+ LDFLAGS_lib/hijack/liblkl-zpoline-$(LKL_HOST_CONFIG_POSIX) += -shared -nodefaultlibs

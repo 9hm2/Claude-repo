@@ -1,0 +1,9 @@
+# kali-rootfs build artifacts — make bundle / build-proot / build-kali-rootfs
+# minden output-ja ide kerül. Sosem commitoljuk:
+#   - proot bináris (180 KB ARM64 ELF)
+#   - kali-archive-keyring (debootstrap GPG bevittnek)
+#   - kalifs-arm64-minimal.tar.xz (~38 MB)
+#   - rootfs/ (kicsomagolt fa, ~700 MB)
+#   - build/ (proot+talloc source extract)
+downloads/
+out/

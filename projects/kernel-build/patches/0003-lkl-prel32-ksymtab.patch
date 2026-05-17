@@ -1,0 +1,39 @@
+Subject: [PATCH] arch/lkl: select HAVE_ARCH_PREL32_RELOCATIONS
+
+The kernel's exported-symbol table (`__ksymtab`) is built with 64-bit
+absolute pointers by default (`struct kernel_symbol::value = &foo`).
+When `liblkl.a` is statically linked into a PIE executable on AArch64
+with `ld.lld` (NDK Bionic toolchain) every such entry triggers
+`R_AARCH64_ABS64` relocations, which lld rejects:
+
+  ld.lld: error: relocation R_AARCH64_ABS64 cannot be used against
+                 symbol 'init_task'; recompile with -fPIC
+  ...
+  ld.lld: error: too many errors emitted, stopping now
+
+Mainline `arch/arm64/` (and `arch/x86_64/`) select
+`HAVE_ARCH_PREL32_RELOCATIONS`, which switches `EXPORT_SYMBOL()` to
+emit each ksymtab entry as a 32-bit PC-relative offset
+(`R_AARCH64_PREL32` / `R_X86_64_PC32`). Those relocations are PIE-safe.
+
+LKL runs as a userspace library on top of POSIX hosts (x86_64, aarch64,
+riscv64), and every supported host linker (ld.bfd, ld.gold, ld.lld)
+handles PREL32. Selecting the option is safe and resolves the link
+failure for both Android Bionic and glibc cross builds with strict
+linkers.
+
+---
+ arch/lkl/Kconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/lkl/Kconfig b/arch/lkl/Kconfig
+--- a/arch/lkl/Kconfig
++++ b/arch/lkl/Kconfig
+@@ -14,6 +14,7 @@ config LKL
+ 	select GENERIC_STRNCPY_FROM_USER
+ 	select GENERIC_STRNLEN_USER
+ 	select HAVE_ARCH_KASAN
++	select HAVE_ARCH_PREL32_RELOCATIONS
+ 	select TRACING
+
+ config LKL_FUZZING

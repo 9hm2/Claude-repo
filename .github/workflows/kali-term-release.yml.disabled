@@ -1,0 +1,426 @@
+name: kali-term release
+
+# Three-stage pipeline path-szűréssel:
+#   1) lkl-android  → kernel-build/ változott → újraépíti
+#   2) kali-rootfs  → kali-rootfs/  változott → újraépíti
+#   3) apk          → MINDIG fut; az LKL/rootfs artifact-okat ha a saját
+#                     jobjuk lefutott innen veszi, KÜLÖNBEN a legutóbbi
+#                     sikeres workflow-run artifact-jaiból.
+#
+# Csak az APK módosítása → ~2-3 perc, a lassú LKL build (~15 perc) és a
+# rootfs debootstrap (~10 perc) skip-pelődik.
+
+on:
+  push:
+    paths:
+      # Szigorúan csak valódi source-változások trigger-eljenek — ne fusson
+      # a workflow `.gitignore`, README, vagy lokális APK release commit-okra.
+      - 'projects/kernel-build/config/**'
+      - 'projects/kernel-build/patches/**'
+      - 'projects/kernel-build/scripts/**'
+      - 'projects/kernel-build/Makefile'
+      - 'projects/kernel-build/LKL_REVISION'
+      - 'projects/kali-rootfs/scripts/**'
+      - 'projects/kali-rootfs/Makefile'
+      - 'projects/kali-term-app/app/**'
+      - 'projects/kali-term-app/build.gradle.kts'
+      - 'projects/kali-term-app/settings.gradle.kts'
+      - 'projects/kali-term-app/gradle/**'
+      - 'projects/kali-term-app/gradle.properties'
+      - 'projects/kali-term-app/scripts/**'
+      - 'projects/usb-bridge/**'
+      - '.github/workflows/kali-term-release.yml'
+  workflow_dispatch:
+
+# A `dawidd6/action-download-artifact` REST API-t hív (GET /actions/runs),
+# a cleanup-step pedig DELETE-et (régi azonos-nevű artifact-ok takarítása,
+# free-tier storage-quota ellen). `contents: read` a checkout-hoz.
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  # ── 0. Path filter — explicit shell-szkripttel, NEM dorny/paths-filter-rel.
+  # Indok: a dorny/paths-filter @v3 push esemény-nél fail-safe módon **minden
+  # filtert true-ra állít** ha a `github.event.before` nem feloldható
+  # (force-push, shallow checkout, vagy default-branch base). Mi explicit
+  # `git diff BEFORE..AFTER`-rel akarunk dönteni — első push / dispatch
+  # esetén full build, egyébként csak az érintett subprojekt.
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      lkl:    ${{ steps.filter.outputs.lkl }}
+      rootfs: ${{ steps.filter.outputs.rootfs }}
+      app:    ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git diff BEFORE..AFTER-hoz kell teljes history
+      - id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          BEFORE='${{ github.event.before }}'
+          AFTER='${{ github.sha }}'
+          EVENT='${{ github.event_name }}'
+          echo "EVENT=$EVENT BEFORE=$BEFORE AFTER=$AFTER"
+
+          # workflow_dispatch vagy első push (BEFORE = 40 nulla) → full build.
+          if [[ "$EVENT" == 'workflow_dispatch' ]] \
+             || [[ -z "$BEFORE" ]] \
+             || [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "→ full build (event=$EVENT, before=$BEFORE)"
+            { echo "lkl=true"; echo "rootfs=true"; echo "app=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Megpróbáljuk a BEFORE-ra fetch-elni ha nincs lokálisan.
+          if ! git rev-parse --verify "$BEFORE^{commit}" >/dev/null 2>&1; then
+            git fetch --no-tags --depth=200 origin "$BEFORE" 2>/dev/null || true
+          fi
+          if ! git rev-parse --verify "$BEFORE^{commit}" >/dev/null 2>&1; then
+            echo "→ BEFORE nem reachable → full build (defenzív)"
+            { echo "lkl=true"; echo "rootfs=true"; echo "app=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BEFORE" "$AFTER")
+          echo "── changed files ──"
+          echo "$CHANGED"
+          echo
+
+          lkl=false; rootfs=false; app=false
+          echo "$CHANGED" | grep -qE '^projects/kernel-build/'  && lkl=true    || true
+          echo "$CHANGED" | grep -qE '^projects/kali-rootfs/'   && rootfs=true || true
+          echo "$CHANGED" | grep -qE '^projects/kali-term-app/|^projects/usb-bridge/|^\.github/workflows/kali-term-release\.yml' && app=true || true
+
+          echo "FINAL: lkl=$lkl, rootfs=$rootfs, app=$app"
+          { echo "lkl=$lkl"; echo "rootfs=$rootfs"; echo "app=$app"; } >> "$GITHUB_OUTPUT"
+
+  # ── 1. LKL Android Bionic build (csak ha kernel-build/ változott) ────
+  lkl-android:
+    name: LKL build (android arm64, Bionic)
+    needs: paths
+    if: needs.paths.outputs.lkl == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: projects/kernel-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            xz-utils ca-certificates curl git pkg-config
+
+      - name: Install Android NDK 27.0.12077973
+        run: |
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: Build LKL (NDK aarch64-linux-android24-clang)
+        run: make lkl-android-arm64
+
+      - name: Inspect output
+        run: |
+          find out/android-arm64 -type f -exec ls -lh {} +
+          shopt -s nullglob
+          for f in out/android-arm64/lib/*.so; do
+            echo "--- readelf -d $f ---"
+            "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$f" | head -20 || true
+          done
+
+      # Free-tier artifact storage (500 MB) — minden upload előtt töröljük
+      # az azonos nevű régi artifact-okat, hogy ne halmozódjon.
+      - name: Cleanup old LKL artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # MINDEN azonos-nevű artifactot törlünk, KIVÉVE a legfrissebbet
+          # (a friss-tartalom fallbackként szolgál ha az upload kvóta-hiba
+          # miatt fail-elne).
+          ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                  --jq '[.artifacts[] | select(.name == "lkl-android-arm64")]
+                        | sort_by(.created_at) | reverse | .[1:] | .[].id' || true)
+          for id in $ids; do
+            echo "delete artifact $id"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lkl-android-arm64
+          path: projects/kernel-build/out/android-arm64/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── 1b. Kali rootfs + proot bundle (párhuzamosan az LKL build mellett) ─
+  kali-rootfs:
+    name: Kali rootfs + proot bundle
+    needs: paths
+    if: needs.paths.outputs.rootfs == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: projects/kali-rootfs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host helpers (curl, xz, file, xxd, build-essential,
+              aarch64-binutils, debootstrap, qemu-user-static, gpg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl ca-certificates xz-utils zstd binutils file \
+            build-essential xxd \
+            binutils-aarch64-linux-gnu \
+            debootstrap qemu-user-static gnupg
+
+      - name: Install Android NDK 27.0.12077973
+        run: |
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.0.12077973" > /dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: Build bundle (proot FORRÁSBÓL ARM64 + Kali rootfs tar.xz + launcher)
+        run: make bundle
+
+      - name: Inspect output
+        run: ls -lh out/
+
+      - name: Cleanup old rootfs artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                  --jq '[.artifacts[] | select(.name == "kali-rootfs-bundle")]
+                        | sort_by(.created_at) | reverse | .[1:] | .[].id' || true)
+          for id in $ids; do
+            echo "delete artifact $id"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kali-rootfs-bundle
+          path: projects/kali-rootfs/out/
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── 2. APK build (LKL + Kali rootfs bundled-velvel) ───────────────────
+  apk:
+    name: APK build (with LKL bundled)
+    needs: [paths, lkl-android, kali-rootfs]
+    # Akkor fut, ha az app filter igaz (vagy LKL/rootfs job upstream
+    # build-et adott le — pl. csak kernel-build változott, app NEM, de
+    # az új LKL-t mégis APK-ba csomagolnánk). Ha mindhárom filter false,
+    # nem fut le, így nincs felesleges artifact-download / quota-fail.
+    if: |
+      always() &&
+      (needs.paths.outputs.app == 'true' ||
+       needs.lkl-android.result == 'success' ||
+       needs.kali-rootfs.result == 'success') &&
+      (needs.lkl-android.result == 'success' || needs.lkl-android.result == 'skipped') &&
+      (needs.kali-rootfs.result == 'success' || needs.kali-rootfs.result == 'skipped')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: projects/kali-term-app
+    steps:
+      - uses: actions/checkout@v4
+
+      # Globális cleanup — ELSŐ STEP. Free-tier 500 MB artifact-storage:
+      # az LKL és kali-rootfs job-ok 7-napos retention-szel mennek, de ha
+      # azok skip-pelnek (gyakori), a régi feleslegek itt halmozódnak. Ez
+      # a step minden néven megtartja a LEGFRISSEBBET, a többit törli.
+      # Indok itt és nem a paths job-ban: storage-quota miatt az APK
+      # upload-ja fail-elne, ezért előbb ürítünk.
+      - name: Purge stale artifacts (storage-quota guard)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in lkl-android-arm64 kali-rootfs-bundle kaliterm-debug-apk; do
+            ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                    --jq "[.artifacts[] | select(.name == \"$name\")]
+                          | sort_by(.created_at) | reverse | .[1:] | .[].id" || true)
+            for id in $ids; do
+              echo "delete artifact $name#$id"
+              gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+            done
+          done
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Install Android NDK + CMake
+        run: |
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --install "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null
+          echo "NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+
+      - name: Fetch Termux terminal-emulator + terminal-view (vendor)
+        run: bash scripts/fetch-termux-terminal.sh "$(pwd)"
+
+      # LKL artifact: ha az lkl-android job ebben a runban lefutott,
+      # onnan; ha skip-pelt (kernel-build/ nem változott), a legutóbbi
+      # sikeres workflow-run artifact-jából.
+      - name: Download LKL artifact (this run)
+        if: needs.lkl-android.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: lkl-android-arm64
+          path: /tmp/lkl-android-arm64
+
+      # KRITIKUS — `search_artifacts: true` + `workflow_conclusion: ""`:
+      # A `dawidd6/action-download-artifact@v6` alapból a legutóbbi run-t
+      # nézi a megadott branchen → de az pont a JELENLEGI run, amiben az
+      # LKL/rootfs job skip-pelt, tehát nincs artifact. "no artifacts found"
+      # hiba. A `search_artifacts: true` iterál vissza a korábbi run-okra
+      # amíg talál egy ami feltöltötte a nevezett artifactot. A
+      # `workflow_conclusion: ""` pedig bármilyen konklúciójú run-t elfogad
+      # (default "success" — de az APK eddig minden run-ban hibázott,
+      # így "success" overall conclusion sosem volt).
+      - name: Download LKL artifact (legutóbbi run)
+        if: needs.lkl-android.result == 'skipped'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: lkl-android-arm64
+          path: /tmp/lkl-android-arm64
+          workflow: kali-term-release.yml
+          workflow_conclusion: ""
+          branch: ${{ github.ref_name }}
+          search_artifacts: true
+          if_no_artifact_found: fail
+
+      # Kali rootfs bundle: ugyanaz a feltételes letöltés.
+      - name: Download Kali rootfs bundle (this run)
+        if: needs.kali-rootfs.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: kali-rootfs-bundle
+          path: /tmp/kali-rootfs-bundle
+
+      - name: Download Kali rootfs bundle (legutóbbi run)
+        if: needs.kali-rootfs.result == 'skipped'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: kali-rootfs-bundle
+          path: /tmp/kali-rootfs-bundle
+          workflow: kali-term-release.yml
+          workflow_conclusion: ""
+          branch: ${{ github.ref_name }}
+          search_artifacts: true
+          if_no_artifact_found: fail
+
+      - name: Place LKL .so → jniLibs, tool ELF-ek → assets,
+              Kali rootfs + proot → assets/rootfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          JNILIB_DIR="app/src/main/jniLibs/arm64-v8a"
+          ASSETS_DIR="app/src/main/assets/lkl/arm64-v8a"
+          ROOTFS_ASSETS="app/src/main/assets/rootfs"
+          mkdir -p "$JNILIB_DIR" "$ASSETS_DIR" "$ROOTFS_ASSETS"
+
+          shopt -s nullglob
+          if [[ -d /tmp/lkl-android-arm64/lib ]]; then
+            for f in /tmp/lkl-android-arm64/lib/*.so; do
+              cp -v "$f" "$JNILIB_DIR/"
+            done
+          fi
+          if [[ -d /tmp/lkl-android-arm64/bin ]]; then
+            for f in /tmp/lkl-android-arm64/bin/*; do
+              cp -v "$f" "$ASSETS_DIR/"
+            done
+          fi
+
+          # Kali rootfs bundle: proot binary + tarball + launcher script.
+          # MEGJEGYZÉS — a tarball ~250 MB, jelentősen megnöveli az APK-t.
+          # Egy későbbi iterációban érdemes lehet on-demand letöltésre váltani
+          # (a bundle-t első indításkor tölti le az app, nem packolja az APK-ba).
+          #
+          # FONTOS — Android W^X (target SDK 29+): a `/data/data/<pkg>/files/`
+          # nem-executable mountpoint, ezért a `proot` binárist NEM tehetjük
+          # az assets-be (onnan kicsomagolva nem indítható, "Permission
+          # denied"). A Termux megoldás: `libproot.so` néven a jniLibs-be,
+          # ahonnan a package manager a `nativeLibraryDir`-be teszi, ami
+          # read-only de **executable**. A launch.sh + tarball még mehet
+          # assets-be (script + adat, nem exec).
+          if [[ -d /tmp/kali-rootfs-bundle ]]; then
+            for f in /tmp/kali-rootfs-bundle/*; do
+              name="$(basename "$f")"
+              case "$name" in
+                proot)
+                  cp -v "$f" "$JNILIB_DIR/libproot.so"
+                  ;;
+                *)
+                  cp -v "$f" "$ROOTFS_ASSETS/"
+                  ;;
+              esac
+            done
+          fi
+
+          echo "jniLibs ($JNILIB_DIR):"
+          ls -lh "$JNILIB_DIR" || true
+          if compgen -G "$ASSETS_DIR/*" >/dev/null; then
+            echo "assets ($ASSETS_DIR):"
+            ls -lh "$ASSETS_DIR"
+          fi
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Lint
+        run: ./gradlew lint --stacktrace
+
+      - name: Unit tests
+        run: ./gradlew test --stacktrace
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Cleanup old APK artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ids=$(gh api -X GET "repos/$REPO/actions/artifacts" --paginate \
+                  --jq '[.artifacts[] | select(.name == "kaliterm-debug-apk")]
+                        | sort_by(.created_at) | reverse | .[1:] | .[].id' || true)
+          for id in $ids; do
+            echo "delete artifact $id"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaliterm-debug-apk
+          path: projects/kali-term-app/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7

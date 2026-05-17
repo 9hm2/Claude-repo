@@ -1,0 +1,484 @@
+package dev.hm.kaliterm
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.hm.kaliterm.ui.theme.AppTheme
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            AppTheme {
+                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                    var screen by remember { mutableStateOf("home") }
+                    // Android rendszer-back gomb: ha sub-screen-en vagyunk,
+                    // vissza a Home-ra; Home-on hagyjuk a default Activity-exitet.
+                    BackHandler(enabled = screen != "home") { screen = "home" }
+                    when (screen) {
+                        // A KaliShell saját imePadding-et kezel — a TerminalView
+                        // weight=1-gyel telik, az ExtraKeys row alul a billentyűzet
+                        // FÖLÖTT marad. A Scaffold-innerPadding csak status/nav-bar
+                        // adatot tartalmaz; az IME-padding-et NEM applikáljuk itt,
+                        // mert akkor duplán adódna össze és üres sáv jönne.
+                        "shell" -> androidx.compose.foundation.layout.Box(
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            KaliShellScreen(onBack = { screen = "home" })
+                        }
+                        "logs" -> androidx.compose.foundation.layout.Box(
+                            modifier = Modifier.fillMaxSize().padding(innerPadding)
+                        ) {
+                            LogScreen(onBack = { screen = "home" })
+                        }
+                        else -> Home(
+                            onOpenKaliShell = { screen = "shell" },
+                            onOpenLogs      = { screen = "logs" },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun Home(
+    onOpenKaliShell: () -> Unit = {},
+    onOpenLogs: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
+    val nativeStatus = runCatching {
+        NativeBridge.nativeHello() to NativeBridge.nativeVersion()
+    }
+    val controller = rememberUsbController()
+    val lastLog by controller.lastAttachLog
+    val lastDesc by controller.lastDescription
+    val bridgeStatus by controller.bridgeStatus
+    val activeBridgeId by controller.activeBridgeDeviceId
+    // LKL most külön `:lkl` process-ben fut — LklController binder-en át beszél vele.
+    // Részletek: LklService.kt / LklController.kt.
+    val lkl = rememberLklController()
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "kaliterm",
+            style = MaterialTheme.typography.headlineMedium,
+        )
+        Text(
+            text = "Userspace Kali terminál — Phase 2b.1",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+
+        // Belépés a Kali shell-be (proot chroot, Termux terminál-emulátor).
+        // Első indításnál a rootfs tar.xz kicsomagolása ~30-60 sec.
+        androidx.compose.foundation.layout.Row(
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+        ) {
+            androidx.compose.material3.Button(
+                onClick = onOpenKaliShell,
+                modifier = Modifier.weight(1f),
+            ) { Text("→ Kali shell") }
+            androidx.compose.material3.OutlinedButton(
+                onClick = onOpenLogs,
+            ) { Text("📋 Logok") }
+        }
+
+        // App teljes leállítás — minden service-t (LklService + KaliShellService),
+        // bridge-eket, USB-kapcsolatokat lebont, majd Activity-t finish-eli.
+        // A `:lkl` foreground notification eltűnik, a Samsung BBA többé NEM tartja
+        // életben a processzt — Android felszabadíthatja az erőforrásokat.
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val activity = context as? android.app.Activity
+        androidx.compose.material3.OutlinedButton(
+            onClick = {
+                // 1) USB bridge teljes leállítás (vhci_hcd detach + libusb cleanup)
+                runCatching { controller.stopBridge() }
+                // 2) LKL service stop — halt + 300ms-en belül killProcess(:lkl pid)
+                runCatching { lkl.stop() }
+                // 3) Kali shell service stop — Activity-bind-ünk megszűnik a finish-szel
+                runCatching {
+                    val intent = android.content.Intent(context, KaliShellService::class.java)
+                    context.stopService(intent)
+                }
+                // 4) Activity finish + task remove → app teljesen kilép
+                activity?.finishAndRemoveTask()
+                // 5) Process self-kill — biztos hogy a main process is meghal
+                android.os.Process.killProcess(android.os.Process.myPid())
+            },
+            colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                contentColor = androidx.compose.material3.MaterialTheme.colorScheme.error
+            ),
+        ) { Text("🛑 App teljes leállítás") }
+
+        nativeStatus.fold(
+            onSuccess = { (msg, ver) ->
+                Text("Natív: $msg")
+                Text("Build: ${ver / 10000}.${(ver / 100) % 100}.${ver % 100}")
+            },
+            onFailure = { e ->
+                Text("Natív betöltés HIBA: ${e.message}")
+            }
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        // LKL állapot-panel.
+        LklStatusBar(
+            status = lkl.status.value,
+            onStart = { lkl.start() },
+            onStop  = { lkl.stop()  },
+            onRefresh = { lkl.refresh() },
+        )
+
+        // Bridge állapot-panel.
+        BridgeStatusBar(
+            status = bridgeStatus,
+            running = activeBridgeId != null,
+            onStop = { controller.stopBridge() },
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "USB eszközök (${controller.devices.size})",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            OutlinedButton(onClick = { controller.refresh() }) { Text("Frissít") }
+        }
+
+        if (lastLog != null) {
+            Text(
+                text = "Utolsó attach: $lastLog",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        if (!lastDesc.isNullOrBlank()) {
+            CopyableLogCard(
+                title = "Descriptor (libusb_wrap_sys_device)",
+                content = lastDesc.orEmpty(),
+            )
+        }
+
+        if (controller.devices.isEmpty()) {
+            Text(
+                text = "Nincs csatlakoztatott USB eszköz. OTG kábellel kapcsolj " +
+                       "rá valamit (pl. CH340/FTDI USB-soros adapter).",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        } else {
+            // FIGYELEM: az egész Home `verticalScroll`-ban van, ezért NEM
+            // használhatunk LazyColumn-t (infinite-height crash). Sima
+            // Column-ra cseréljük — az USB eszközök száma általában <10,
+            // úgyhogy a render-cost elhanyagolható.
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                controller.devices.forEach { state ->
+                    val isThisBridged = activeBridgeId == state.device.deviceId
+                    val otherBridgeRunning = activeBridgeId != null && !isThisBridged
+                    key(state.device.deviceId) {
+                        UsbDeviceCard(
+                            state = state,
+                            bridgeOnThisDevice = isThisBridged,
+                            otherBridgeBlocking = otherBridgeRunning,
+                            onRequestPermission = { controller.requestPermission(state) },
+                            onProbe = { controller.attachToBridge(state) },
+                            onStartBridge = { controller.startBridge(state) },
+                            onStopBridge = { controller.stopBridge() },
+                            onAttachLkl = { controller.attachToLkl(state, lkl) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BridgeStatusBar(
+    status: String,
+    running: Boolean,
+    onStop: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val color = if (running) MaterialTheme.colorScheme.tertiaryContainer
+                else          MaterialTheme.colorScheme.surfaceVariant
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = color),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = if (running) "Bridge — RUNNING" else "Bridge — STOPPED",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            // SelectionContainer: long-press → select → system "copy".
+            SelectionContainer {
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(status))
+                }) { Text("Másol") }
+                if (running) {
+                    OutlinedButton(onClick = onStop) { Text("Stop") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LklStatusBar(
+    status: String,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val running       = status.contains("running = YES")
+    val terminated    = status.contains("running = TERMINATED")
+    val available     = status.startsWith("AVAILABLE")
+    /* A "(" prefix mind transient életciklus-állapot a kontrollertől:
+     * pl. "(nincs bind)", "(bind folyamatban...)", "(:lkl process kill folyamatban)" */
+    val transitioning = status.startsWith("(")
+    val color = when {
+        running       -> MaterialTheme.colorScheme.tertiaryContainer
+        terminated    -> MaterialTheme.colorScheme.errorContainer
+        available     -> MaterialTheme.colorScheme.secondaryContainer
+        transitioning -> MaterialTheme.colorScheme.surfaceContainerHigh
+        else          -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = color),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            // Cím (mindig külön sorban, hogy ne ütközzön a gombokkal)
+            Text(
+                text = when {
+                    running       -> "LKL — RUNNING (:lkl process)"
+                    terminated    -> "LKL — TERMINATED (app-restart kell)"
+                    available     -> "LKL — READY (:lkl process spawn-olva)"
+                    transitioning -> "LKL — átmenet folyamatban…"
+                    else          -> "LKL — UNAVAILABLE"
+                },
+                style = MaterialTheme.typography.titleSmall,
+            )
+            // Részletes status (monospace, scrollozható)
+            SelectionContainer {
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 160.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+            }
+            // Akciógombok — saját sorban, jobbra igazítva, hogy mindig
+            // mind a 3-4 elférjen szűk kijelzőn is.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(status))
+                }) { Text("Másol") }
+                OutlinedButton(onClick = onRefresh) { Text("Frissít") }
+                if (running) {
+                    Button(onClick = onStop) { Text("Halt") }
+                } else if (!terminated) {
+                    // Start akkor is, ha még nincs bind (controller pending-start-ot
+                    // ütemez), vagy ha a :lkl process kill-elve volt (fresh spawn).
+                    Button(onClick = onStart) { Text("Start") }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Hosszabb, scrollozható, mono-spaced szöveg dobozban — `SelectionContainer`
+ * + egy "Másolás" gomb, ami a teljes tartalmat egy érintéssel vágólapra teszi.
+ * Logok és descriptor-dump-ok megjelenítésére használjuk.
+ */
+@Composable
+private fun CopyableLogCard(
+    title: String,
+    content: String,
+    maxHeight: androidx.compose.ui.unit.Dp = 220.dp,
+) {
+    val clipboard = LocalClipboardManager.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                TextButton(onClick = {
+                    clipboard.setText(AnnotatedString(content))
+                }) { Text("Másolás") }
+            }
+            SelectionContainer {
+                Text(
+                    text = content,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = maxHeight)
+                        .verticalScroll(rememberScrollState()),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsbDeviceCard(
+    state: UsbDeviceState,
+    bridgeOnThisDevice: Boolean,
+    otherBridgeBlocking: Boolean,
+    onRequestPermission: () -> Unit,
+    onProbe: () -> Unit,
+    onStartBridge: () -> Unit,
+    onStopBridge: () -> Unit,
+    onAttachLkl: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (bridgeOnThisDevice)
+                MaterialTheme.colorScheme.tertiaryContainer
+            else
+                MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            val d = state.device
+            Text(
+                text = "%04x:%04x  ${d.productName ?: "(névtelen)"}"
+                    .format(d.vendorId, d.productId),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = "gyártó: ${d.manufacturerName ?: "?"}   class: ${d.deviceClass}.${d.deviceSubclass}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "path: ${d.deviceName}   ifs: ${d.interfaceCount}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!state.granted) {
+                    Button(onClick = onRequestPermission) { Text("Engedély") }
+                } else if (bridgeOnThisDevice) {
+                    Button(onClick = onStopBridge) { Text("Stop bridge") }
+                } else {
+                    OutlinedButton(onClick = onProbe) { Text("Probe") }
+                    Button(onClick = onAttachLkl) { Text("→ LKL") }
+                }
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun HomePreview() {
+    AppTheme {
+        Home()
+    }
+}

@@ -1,0 +1,4 @@
+build/
+out/
+*.tar.xz
+*.tar.xz.part
