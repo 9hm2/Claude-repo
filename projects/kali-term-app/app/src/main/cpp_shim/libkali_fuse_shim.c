@@ -208,7 +208,12 @@ int open(const char *path, int flags, ...)
         va_list ap; va_start(ap, flags);
         mode = va_arg(ap, mode_t); va_end(ap);
     }
-    if (!is_lkl_path(path)) return r_open(path, flags, mode);
+    if (!is_lkl_path(path)) {
+        int rc = r_open(path, flags, mode);
+        if (is_virt_fs_path(path))
+            fprintf(stderr, "[shim open] path=%s flags=0x%x rc=%d\n", path, flags, rc);
+        return rc;
+    }
 
     int sock = sock_connect();
     if (sock < 0) return r_open(path, flags, mode);
@@ -246,7 +251,11 @@ int openat(int dirfd, const char *path, int flags, ...)
     if (path && path[0] == '/' && is_lkl_path(path)) {
         return open(path, flags, mode);
     }
-    return r_openat(dirfd, path, flags, mode);
+    int rc = r_openat(dirfd, path, flags, mode);
+    if (path && is_virt_fs_path(path))
+        fprintf(stderr, "[shim openat] dirfd=%d path=%s flags=0x%x rc=%d\n",
+                dirfd, path, flags, rc);
+    return rc;
 }
 
 /* ────────────────────────────────────────────────────────────────────
@@ -348,18 +357,34 @@ static int lkl_stat_real(const char *path, struct stat *st)
     return -1;
 }
 
+/* Helper: /sys, /proc, /dev path-prefix-ekre fprintf-debug. Ki tudjuk
+ * deríteni MELYIK fájl-syscallt hív a libusb a "sysfs not mounted"
+ * check-jéhez. */
+static int is_virt_fs_path(const char *p)
+{
+    if (!p || p[0] != '/') return 0;
+    if (strncmp(p, "/sys",  4) == 0 && (p[4]  == '\0' || p[4]  == '/')) return 1;
+    if (strncmp(p, "/proc", 5) == 0 && (p[5]  == '\0' || p[5]  == '/')) return 1;
+    if (strncmp(p, "/dev",  4) == 0 && (p[4]  == '\0' || p[4]  == '/')) return 1;
+    return 0;
+}
+
 int stat(const char *path, struct stat *st)
 {
     INIT(stat);
-    if (is_lkl_path(path)) return lkl_stat_real(path, st);
-    return r_stat(path, st);
+    int rc = r_stat(path, st);
+    if (is_virt_fs_path(path))
+        fprintf(stderr, "[shim stat] path=%s rc=%d\n", path, rc);
+    return rc;
 }
 
 int lstat(const char *path, struct stat *st)
 {
     INIT(lstat);
-    if (is_lkl_path(path)) return lkl_stat_real(path, st);
-    return r_lstat(path, st);
+    int rc = r_lstat(path, st);
+    if (is_virt_fs_path(path))
+        fprintf(stderr, "[shim lstat] path=%s rc=%d\n", path, rc);
+    return rc;
 }
 
 int fstat(int fd, struct stat *st)
@@ -383,8 +408,10 @@ int __fxstat(int ver, int fd, struct stat *st)           { return fstat(fd, st);
 int access(const char *path, int mode)
 {
     INIT(access);
-    if (is_lkl_path(path)) return 0;  /* feltesszük hogy létezik */
-    return r_access(path, mode);
+    int rc = r_access(path, mode);
+    if (is_virt_fs_path(path))
+        fprintf(stderr, "[shim access] path=%s mode=0x%x rc=%d\n", path, mode, rc);
+    return rc;
 }
 
 /* ────────────────────────────────────────────────────────────────────
