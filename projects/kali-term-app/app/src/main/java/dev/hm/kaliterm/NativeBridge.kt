@@ -140,6 +140,21 @@ object NativeBridge {
         fd: Int, vid: Int, pid: Int, busnum: Int, devnum: Int,
     ): String
 
+    /**
+     * USB-bridge leállítása az LKL kernel-szinten:
+     *  - URB worker thread leállítás (sv_user close)
+     *  - vhci_hcd port detach (/sys/devices/platform/vhci_hcd.0/detach ← "0")
+     *  - libusb handle + ctx zárás
+     *
+     * A `UsbController` hívja amikor a fizikai eszköz ki van húzva
+     * (ACTION_USB_DEVICE_DETACHED), hogy a chrooted shell-ben a /sys/bus/usb
+     * "tisztán" tükrözze az új állapotot, és a következő re-attach
+     * újrahasználhassa a vhci_hcd portot.
+     *
+     * Idempotens — ha nincs futó bridge, 0-t ad vissza.
+     */
+    external fun nativeLklStopUsbBridge(): Int
+
     /* ── Phase 3 — shell host a :lkl process-ben ────────────────────── */
 
     /**

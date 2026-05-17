@@ -184,6 +184,65 @@ static struct kmsg_buf *get_kmsg(int fd) {
     if (!is_kmsg_fd(fd)) return NULL;
     return &g_kmsg[fd - (MAGIC_FD_BASE + MAX_LKL_FDS)];
 }
+
+/* ────────────────────────────────────────────────────────────────────
+ *  NETLINK socket-route — AF_NETLINK → LKL kernel
+ *
+ *  Az iw, wpa_supplicant, nl80211-userspace toolok AF_NETLINK socket-tel
+ *  beszélnek a cfg80211/nl80211 driver-okhoz. Android-on a chrooted process
+ *  AF_NETLINK syscallja az Android kernel netlinkjére megy, NEM az LKL
+ *  kernelre, ahol a Wi-Fi driver (rtl8xxxu / rtw88 / mac80211) él.
+ *
+ *  Megoldás: a libc `socket()`-jét felülírjuk. Ha AF_NETLINK kérés érkezik,
+ *  egy LKL-belső netlink socket-et nyitunk a control-socket NLOPEN parancsán
+ *  át, és magic-fd-t adunk vissza. A subsequenct bind/sendto/recvfrom/
+ *  sendmsg/recvmsg/setsockopt/getsockname/close hívásokat is intercept-eljük
+ *  és LKL-route-oljuk. */
+#define NL_FD_BASE     (MAGIC_FD_BASE + MAX_LKL_FDS + MAX_KMSG_BUFS)
+#define MAX_NL_FDS     64
+
+struct nl_slot {
+    int  sock;        /* per-fd control-socket connection */
+    long lkl_fd;      /* LKL-kernel-belső netlink fd */
+};
+static struct nl_slot g_nl[MAX_NL_FDS];
+static pthread_mutex_t g_nl_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int is_nl_fd(int fd) {
+    return fd >= NL_FD_BASE && fd < NL_FD_BASE + MAX_NL_FDS;
+}
+static struct nl_slot *get_nl(int fd) {
+    if (!is_nl_fd(fd)) return NULL;
+    pthread_mutex_lock(&g_nl_lock);
+    struct nl_slot *s = &g_nl[fd - NL_FD_BASE];
+    pthread_mutex_unlock(&g_nl_lock);
+    return (s->sock > 0) ? s : NULL;
+}
+static int alloc_nl_slot(int sock, long lkl_fd)
+{
+    pthread_mutex_lock(&g_nl_lock);
+    for (int i = 0; i < MAX_NL_FDS; i++) {
+        if (g_nl[i].sock == 0) {
+            g_nl[i].sock = sock;
+            g_nl[i].lkl_fd = lkl_fd;
+            pthread_mutex_unlock(&g_nl_lock);
+            return NL_FD_BASE + i;
+        }
+    }
+    pthread_mutex_unlock(&g_nl_lock);
+    return -1;
+}
+static void free_nl_slot(int fd)
+{
+    if (!is_nl_fd(fd)) return;
+    INIT(close);
+    pthread_mutex_lock(&g_nl_lock);
+    struct nl_slot *s = &g_nl[fd - NL_FD_BASE];
+    int sock = s->sock;
+    s->sock = 0; s->lkl_fd = -1;
+    pthread_mutex_unlock(&g_nl_lock);
+    if (sock > 0) r_close(sock);
+}
 static void free_kmsg(int fd) {
     if (!is_kmsg_fd(fd)) return;
     pthread_mutex_lock(&g_kmsg_lock);
@@ -513,6 +572,20 @@ int close(int fd)
         return 0;
     }
 
+    /* NL-fd: NLCLOSE parancs az LKL-nek + per-fd socket bezárás. */
+    if (is_nl_fd(fd)) {
+        struct nl_slot *s = get_nl(fd);
+        if (s) {
+            char req[64];
+            int n = snprintf(req, sizeof(req), "NLCLOSE %ld\n", s->lkl_fd);
+            write(s->sock, req, n);
+            char resp[64];
+            read_line(s->sock, resp, sizeof(resp));
+        }
+        free_nl_slot(fd);
+        return 0;
+    }
+
     struct lkl_slot *s = get_slot(fd);
     if (!s) { errno = EBADF; return -1; }
 
@@ -776,41 +849,275 @@ static int (*r_setsockopt)(int, int, int, const void *, socklen_t) = NULL;
  * FORWARD-MOVED: a SHIM_DBG-t a többi shim-print elé pakoltuk, lentebb
  * már csak a fake netlink/bind/setsockopt-marad. */
 
+#ifndef NETLINK_GENERIC
+#define NETLINK_GENERIC 16
+#endif
+
 int socket(int domain, int type, int protocol)
 {
     INIT(socket);
     if (domain == AF_NETLINK && protocol == NETLINK_KOBJECT_UEVENT) {
+        /* udev-monitor stub — socketpair-rel csendesen blokkolt poll. */
         int sp[2];
         if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) < 0) return -1;
-        /* a peer-vég (sp[1]) sosem ad data-t → recvmsg blocked-marad,
-         * de NEM fail-el. A libusb init OK. */
-        SHIM_DBG("[shim socket] fake netlink fd=%d\n", sp[0]);
+        SHIM_DBG("[shim socket] fake udev netlink fd=%d\n", sp[0]);
         return sp[0];
+    }
+    if (domain == AF_NETLINK && protocol == NETLINK_GENERIC) {
+        /* nl80211/cfg80211 → LKL-route a control-socketen át.
+         * Dedikált sock-kapcsolat per netlink-fd, hogy a parallel send/recv
+         * műveletek ne ütközzenek más LKL-clientekkel. */
+        int sock = sock_connect();
+        if (sock < 0) {
+            SHIM_DBG("[shim socket NL_GENERIC] sock_connect fail → real\n");
+            return r_socket(domain, type, protocol);
+        }
+        char req[64];
+        int rn = snprintf(req, sizeof(req), "NLOPEN %d %d\n", type, protocol);
+        if (write(sock, req, rn) != rn) { close(sock); errno = EIO; return -1; }
+        char resp[128];
+        if (read_line(sock, resp, sizeof(resp)) <= 0) {
+            close(sock); errno = EIO; return -1;
+        }
+        long lkl_fd = -1;
+        if (sscanf(resp, "OK fd=%ld", &lkl_fd) == 1 && lkl_fd >= 0) {
+            int magic = alloc_nl_slot(sock, lkl_fd);
+            if (magic > 0) {
+                SHIM_DBG("[shim socket NL_GENERIC] magic_fd=%d lkl_fd=%ld\n",
+                         magic, lkl_fd);
+                return magic;
+            }
+            close(sock); errno = EMFILE; return -1;
+        }
+        int err = 0; sscanf(resp, "ERR errno=%d", &err);
+        close(sock); errno = err ? err : EIO;
+        return -1;
     }
     return r_socket(domain, type, protocol);
 }
 
-/* bind() override — AF_NETLINK addr-okra no-op (fake netlink fd-n a bind
- * úgyis EINVAL-lal failelne). A nem-netlink hívások passzolódnak tovább. */
+/* bind() override:
+ *   1. LKL-routed magic-fd (NL_GENERIC) → NLBIND control-socket parancs
+ *   2. fake udev fd-n AF_NETLINK addr → no-op (socketpair-rel kompat)
+ *   3. egyéb → real bind */
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 {
     INIT(bind);
+    if (is_nl_fd(sockfd) && addr && addr->sa_family == AF_NETLINK) {
+        struct nl_slot *s = get_nl(sockfd);
+        if (!s) { errno = EBADF; return -1; }
+        /* sockaddr_nl layout: family(2) + pad(2) + pid(4) + groups(4) */
+        const struct sockaddr_nl *nla = (const struct sockaddr_nl *)addr;
+        char req[80];
+        int rn = snprintf(req, sizeof(req), "NLBIND %ld %u %u\n",
+                          s->lkl_fd, nla->nl_pid, nla->nl_groups);
+        if (write(s->sock, req, rn) != rn) { errno = EIO; return -1; }
+        char resp[64];
+        if (read_line(s->sock, resp, sizeof(resp)) <= 0) { errno = EIO; return -1; }
+        if (strncmp(resp, "OK", 2) == 0) return 0;
+        int err = 0; sscanf(resp, "ERR errno=%d", &err);
+        errno = err ? err : EIO;
+        return -1;
+    }
     if (addr && addr->sa_family == AF_NETLINK) {
-        SHIM_DBG("[shim bind] AF_NETLINK fd=%d → no-op (OK)\n", sockfd);
+        /* fake udev netlink fd-n — no-op */
         return 0;
     }
     return r_bind(sockfd, addr, addrlen);
 }
 
-/* setsockopt() override — SOL_NETLINK level-re no-op (AF_UNIX fd-n a
- * setsockopt(NETLINK_*) ENOPROTOOPT-tal failelne). */
 int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
 {
     INIT(setsockopt);
+    if (is_nl_fd(sockfd) && level == SOL_NETLINK) {
+        /* LKL-routed NL_GENERIC → NLSETSO parancs */
+        struct nl_slot *s = get_nl(sockfd);
+        if (!s) { errno = EBADF; return -1; }
+        if (optlen > 256) { errno = EINVAL; return -1; }
+        char req[96];
+        int rn = snprintf(req, sizeof(req), "NLSETSO %ld %d %d %d\n",
+                          s->lkl_fd, level, optname, (int)optlen);
+        if (write(s->sock, req, rn) != rn) { errno = EIO; return -1; }
+        if (optlen > 0 && write(s->sock, optval, optlen) != (ssize_t)optlen) {
+            errno = EIO; return -1;
+        }
+        char resp[64];
+        if (read_line(s->sock, resp, sizeof(resp)) <= 0) { errno = EIO; return -1; }
+        if (strncmp(resp, "OK", 2) == 0) return 0;
+        int err = 0; sscanf(resp, "ERR errno=%d", &err);
+        errno = err ? err : EIO;
+        return -1;
+    }
     if (level == SOL_NETLINK) {
+        /* fake udev fd-n — no-op */
         return 0;
     }
     return r_setsockopt(sockfd, level, optname, optval, optlen);
+}
+
+/* sendto / recvfrom intercept — netlink-magic-fd-re LKL-route. */
+static ssize_t (*r_sendto)(int, const void *, size_t, int,
+                           const struct sockaddr *, socklen_t) = NULL;
+static ssize_t (*r_recvfrom)(int, void *, size_t, int,
+                             struct sockaddr *, socklen_t *) = NULL;
+static ssize_t (*r_sendmsg)(int, const struct msghdr *, int) = NULL;
+static ssize_t (*r_recvmsg)(int, struct msghdr *, int) = NULL;
+static int     (*r_getsockname)(int, struct sockaddr *, socklen_t *) = NULL;
+
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+    if (!r_sendto) r_sendto = dlsym(RTLD_NEXT, "sendto");
+    if (is_nl_fd(sockfd)) {
+        struct nl_slot *s = get_nl(sockfd);
+        if (!s) { errno = EBADF; return -1; }
+        if (len > 65536) { errno = EMSGSIZE; return -1; }
+        char req[96];
+        int rn = snprintf(req, sizeof(req), "NLSEND %ld %zu\n", s->lkl_fd, len);
+        if (write(s->sock, req, rn) != rn) { errno = EIO; return -1; }
+        if (write(s->sock, buf, len) != (ssize_t)len) { errno = EIO; return -1; }
+        char resp[64];
+        if (read_line(s->sock, resp, sizeof(resp)) <= 0) { errno = EIO; return -1; }
+        long sent = -1;
+        if (sscanf(resp, "OK sent=%ld", &sent) == 1) return sent;
+        int err = 0; sscanf(resp, "ERR errno=%d", &err);
+        errno = err ? err : EIO;
+        return -1;
+    }
+    return r_sendto(sockfd, buf, len, flags, dest_addr, addrlen);
+}
+
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+                 struct sockaddr *src_addr, socklen_t *addrlen)
+{
+    if (!r_recvfrom) r_recvfrom = dlsym(RTLD_NEXT, "recvfrom");
+    if (is_nl_fd(sockfd)) {
+        struct nl_slot *s = get_nl(sockfd);
+        if (!s) { errno = EBADF; return -1; }
+        if (len > 65536) len = 65536;
+        char req[64];
+        int rn = snprintf(req, sizeof(req), "NLRECV %ld %zu\n", s->lkl_fd, len);
+        if (write(s->sock, req, rn) != rn) { errno = EIO; return -1; }
+        char hdr[64];
+        if (read_line(s->sock, hdr, sizeof(hdr)) <= 0) { errno = EIO; return -1; }
+        long got = -1;
+        if (sscanf(hdr, "OK len=%ld", &got) == 1) {
+            INIT(read);
+            size_t total = 0;
+            while (total < (size_t)got) {
+                ssize_t r = r_read(s->sock, (char *)buf + total, (size_t)got - total);
+                if (r <= 0) break;
+                total += r;
+            }
+            if (src_addr && addrlen && *addrlen >= sizeof(struct sockaddr_nl)) {
+                struct sockaddr_nl *sa = (struct sockaddr_nl *)src_addr;
+                memset(sa, 0, sizeof(*sa));
+                sa->nl_family = AF_NETLINK;
+                *addrlen = sizeof(struct sockaddr_nl);
+            }
+            return (ssize_t)total;
+        }
+        int err = 0; sscanf(hdr, "ERR errno=%d", &err);
+        errno = err ? err : EIO;
+        return -1;
+    }
+    return r_recvfrom(sockfd, buf, len, flags, src_addr, addrlen);
+}
+
+/* sendmsg/recvmsg — netlink-fd-re EGY iovec-et flattenelünk és sendto-zunk.
+ * iw / libnl egyetlen iov-ot küld, általában nincs cmsg sem. */
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
+{
+    if (!r_sendmsg) r_sendmsg = dlsym(RTLD_NEXT, "sendmsg");
+    if (is_nl_fd(sockfd)) {
+        if (!msg || msg->msg_iovlen == 0) { errno = EINVAL; return -1; }
+        /* Egyszerű eset: 1 iov */
+        if (msg->msg_iovlen == 1) {
+            return sendto(sockfd, msg->msg_iov[0].iov_base,
+                          msg->msg_iov[0].iov_len, flags, NULL, 0);
+        }
+        /* Több iov: flattenelés egy lokál bufferbe */
+        size_t total = 0;
+        for (size_t i = 0; i < (size_t)msg->msg_iovlen; i++)
+            total += msg->msg_iov[i].iov_len;
+        if (total == 0 || total > 65536) { errno = EMSGSIZE; return -1; }
+        char *buf = malloc(total);
+        if (!buf) { errno = ENOMEM; return -1; }
+        size_t off = 0;
+        for (size_t i = 0; i < (size_t)msg->msg_iovlen; i++) {
+            memcpy(buf + off, msg->msg_iov[i].iov_base, msg->msg_iov[i].iov_len);
+            off += msg->msg_iov[i].iov_len;
+        }
+        ssize_t rc = sendto(sockfd, buf, total, flags, NULL, 0);
+        free(buf);
+        return rc;
+    }
+    return r_sendmsg(sockfd, msg, flags);
+}
+
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
+{
+    if (!r_recvmsg) r_recvmsg = dlsym(RTLD_NEXT, "recvmsg");
+    if (is_nl_fd(sockfd)) {
+        if (!msg || msg->msg_iovlen == 0) { errno = EINVAL; return -1; }
+        size_t cap = 0;
+        for (size_t i = 0; i < (size_t)msg->msg_iovlen; i++)
+            cap += msg->msg_iov[i].iov_len;
+        if (cap == 0) { errno = EINVAL; return -1; }
+        if (cap > 65536) cap = 65536;
+        char *buf = malloc(cap);
+        if (!buf) { errno = ENOMEM; return -1; }
+        socklen_t addrlen = msg->msg_namelen;
+        ssize_t got = recvfrom(sockfd, buf, cap, flags,
+                               (struct sockaddr *)msg->msg_name, &addrlen);
+        if (got > 0) {
+            size_t off = 0;
+            for (size_t i = 0; i < (size_t)msg->msg_iovlen && off < (size_t)got; i++) {
+                size_t take = msg->msg_iov[i].iov_len;
+                if (take > (size_t)got - off) take = (size_t)got - off;
+                memcpy(msg->msg_iov[i].iov_base, buf + off, take);
+                off += take;
+            }
+            msg->msg_namelen = addrlen;
+            msg->msg_controllen = 0;  /* nincs cmsg-támogatás */
+            msg->msg_flags = 0;
+        }
+        free(buf);
+        return got;
+    }
+    return r_recvmsg(sockfd, msg, flags);
+}
+
+/* getsockname — netlink-fd-en a kernel-assigned PID-et libnl várja vissza. */
+int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+{
+    if (!r_getsockname) r_getsockname = dlsym(RTLD_NEXT, "getsockname");
+    if (is_nl_fd(sockfd)) {
+        struct nl_slot *s = get_nl(sockfd);
+        if (!s) { errno = EBADF; return -1; }
+        char req[64];
+        int rn = snprintf(req, sizeof(req), "NLGETSN %ld\n", s->lkl_fd);
+        if (write(s->sock, req, rn) != rn) { errno = EIO; return -1; }
+        char resp[128];
+        if (read_line(s->sock, resp, sizeof(resp)) <= 0) { errno = EIO; return -1; }
+        unsigned pid = 0, groups = 0;
+        if (sscanf(resp, "OK pid=%u groups=%u", &pid, &groups) == 2) {
+            if (!addr || !addrlen || *addrlen < sizeof(struct sockaddr_nl)) {
+                errno = EINVAL; return -1;
+            }
+            struct sockaddr_nl *sa = (struct sockaddr_nl *)addr;
+            memset(sa, 0, sizeof(*sa));
+            sa->nl_family = AF_NETLINK;
+            sa->nl_pid    = pid;
+            sa->nl_groups = groups;
+            *addrlen = sizeof(struct sockaddr_nl);
+            return 0;
+        }
+        int err = 0; sscanf(resp, "ERR errno=%d", &err);
+        errno = err ? err : EIO;
+        return -1;
+    }
+    return r_getsockname(sockfd, addr, addrlen);
 }
 
 /* statfs() override — libusb a sysfs jelenlétét úgy ellenőrzi, hogy

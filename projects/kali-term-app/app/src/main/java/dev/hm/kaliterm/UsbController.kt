@@ -66,10 +66,28 @@ class UsbController(private val context: Context) {
      */
     private var activeConnection: UsbDeviceConnection? = null
 
+    /** Az aktív bridge-hez használt LklController referencia — a
+     *  DETACHED broadcastre szól ki `:lkl` process-nek a tisztításhoz
+     *  (URB worker stop + vhci_hcd port detach). */
+    private var activeLkl: LklController? = null
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
-            // Bármilyen USB esemény után újraszámoljuk a teljes listát —
-            // a permission state és az eszközhalmaz egyaránt változhatott.
+            // DETACHED esemény: ha az aktív bridge-elt eszköz lekapcsolódott,
+            // automatikusan állítsuk le a bridge-et és detach-oljuk az LKL-ről.
+            // Egyébként csak refresh — a UI az eszközhalmazt frissíti.
+            if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
+                val detached: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                val activeId = activeBridgeDeviceId.value
+                if (detached != null && activeId == detached.deviceId) {
+                    android.util.Log.i(
+                        "kaliterm-usb",
+                        "USB device detached (deviceId=$activeId vid=${detached.vendorId} " +
+                            "pid=${detached.productId}) — stopping bridge",
+                    )
+                    stopBridge()
+                }
+            }
             refresh()
         }
     }
@@ -122,6 +140,8 @@ class UsbController(private val context: Context) {
         val conn: UsbDeviceConnection = usbManager.openDevice(state.device) ?: return -2
         val fd = conn.fileDescriptor
         if (fd < 0) { conn.close(); return -3 }
+        activeLkl = lkl
+        activeBridgeDeviceId.value = state.device.deviceId
         // A conn referenciát le kell kötnünk a state-be amíg a bridge fut,
         // különben a GC bezárja az fd-t a libusb alól. Phase 2c.5d-ig (URB
         // dispatch) a bridge nem fut tovább a :lkl process-ben — a natív
@@ -204,7 +224,14 @@ class UsbController(private val context: Context) {
     }
 
     fun stopBridge(): Int {
+        // 1) LKL :lkl process — URB worker stop + vhci_hcd port detach.
+        //    A `nativeLklStopUsbBridge` Binder-en át hívva idempotens, hibákat
+        //    csendben lenyel (a fő stopBridge logika nem szabad hogy elhasaljon).
+        runCatching { activeLkl?.stopUsbBridge() }
+        activeLkl = null
+        // 2) main process bridge stop (legacy nativeStopBridge — Phase 2b-ből).
         val rc = runCatching { NativeBridge.nativeStopBridge() }.getOrDefault(-1)
+        // 3) Android-oldali USB connection close — fd elengedés a kernel felé.
         activeConnection?.close()
         activeConnection = null
         activeBridgeDeviceId.value = null

@@ -33,6 +33,18 @@ interface ILklService {
                            int vid, int pid, int busnum, int devnum);
 
     /**
+     * USB-bridge leállítása az LKL kernel-szinten — `nativeLklStopUsbBridge`
+     * wrapper. A `UsbController` hívja ezt amikor a fizikai eszköz ki van
+     * húzva (ACTION_USB_DEVICE_DETACHED), hogy:
+     *   1. az URB worker thread leálljon (sv_user close)
+     *   2. a vhci_hcd port detach-elve legyen (sysfs write "0")
+     *   3. a libusb handle / ctx / dup_fd zárva legyen
+     *
+     * Idempotens: ha nincs futó bridge, 0-t ad. Negatív errno ha hiba.
+     */
+    int stopUsbBridge();
+
+    /**
      * Read-only fájl-olvasás a futó LKL kernel fájlrendszeréből.
      * Pl. `/proc/version`, `/proc/sys/kernel/osrelease`, `/proc/cpuinfo`,
      * `/proc/meminfo`. Üres stringgel tér vissza ha a kernel nem fut, vagy

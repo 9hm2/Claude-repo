@@ -69,7 +69,20 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_NR_write         64
 #define LKL_NR_socket       198
 #define LKL_NR_socketpair   199
+#define LKL_NR_bind         200
+#define LKL_NR_connect      203
+#define LKL_NR_getsockname  204
+#define LKL_NR_sendto       206
+#define LKL_NR_recvfrom     207
+#define LKL_NR_setsockopt   208
+#define LKL_NR_getsockopt   209
+#define LKL_NR_sendmsg      211
+#define LKL_NR_recvmsg      212
 #define LKL_NR_getdents64    61
+
+/* AF_NETLINK + NETLINK_GENERIC használata az nl80211-hez (iw, wpa_supplicant) */
+#define LKL_AF_NETLINK       16
+#define LKL_NETLINK_GENERIC  16
 #define LKL_NR_syslog        116      /* syslog(2) — kernel ring-buffer read */
 #define LKL_SYSLOG_READ_ALL  3        /* SYSLOG_ACTION_READ_ALL */
 #define LKL_SYSLOG_SIZE_BUFFER 10     /* query ring buffer size */
@@ -1204,6 +1217,152 @@ static void ctrl_handle_command(int conn, char *line)
         write(conn, hdr, hn);
         if (n > 0) write(conn, kbuf, (size_t)n);
         free(kbuf);
+    } else if (strcmp(op, "NLOPEN") == 0) {
+        /* NLOPEN <type> <protocol> → AF_NETLINK socket az LKL kernelben.
+         * iw/wpa_supplicant/libnl ezt használja a cfg80211 driver-okhoz.
+         * type=SOCK_RAW(3) vagy SOCK_DGRAM(2); protocol=NETLINK_GENERIC(16). */
+        int type = 3, proto = LKL_NETLINK_GENERIC;
+        sscanf(rest, "%d %d", &type, &proto);
+        long fd = lkl_call(LKL_NR_socket, LKL_AF_NETLINK, type, proto, 0, 0);
+        char resp[64];
+        int n = (fd < 0)
+            ? snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -fd)
+            : snprintf(resp, sizeof(resp), "OK fd=%ld\n", fd);
+        write(conn, resp, n);
+    } else if (strcmp(op, "NLBIND") == 0) {
+        /* NLBIND <fd> <pid> <groups>
+         * sockaddr_nl { family=AF_NETLINK, _pad=0, pid, groups }. 12 bytes. */
+        long fd; unsigned int pid = 0, groups = 0;
+        if (sscanf(rest, "%ld %u %u", &fd, &pid, &groups) < 1) {
+            write(conn, "ERR badarg\n", 11); return;
+        }
+        struct {
+            unsigned short nl_family;
+            unsigned short nl_pad;
+            unsigned int   nl_pid;
+            unsigned int   nl_groups;
+        } addr = { LKL_AF_NETLINK, 0, pid, groups };
+        long rc = lkl_call(LKL_NR_bind, fd,
+                           (long)(intptr_t)&addr, sizeof(addr), 0, 0);
+        char resp[64];
+        int n = (rc < 0)
+            ? snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -rc)
+            : snprintf(resp, sizeof(resp), "OK\n");
+        write(conn, resp, n);
+    } else if (strcmp(op, "NLSEND") == 0) {
+        /* NLSEND <fd> <len>\n<len bytes...>
+         * sendto(fd, buf, len, 0, &kernel_addr, 12), ahol kernel_addr a
+         * sockaddr_nl{family=AF_NETLINK, pid=0, groups=0} — kernel-destination. */
+        long fd; int len;
+        if (sscanf(rest, "%ld %d", &fd, &len) != 2 || len <= 0 || len > 65536) {
+            write(conn, "ERR badarg\n", 11); return;
+        }
+        char *buf = malloc(len);
+        if (!buf) { write(conn, "ERR nomem\n", 10); return; }
+        /* read len bytes from conn */
+        int got = 0;
+        while (got < len) {
+            ssize_t r = read(conn, buf + got, len - got);
+            if (r <= 0) break;
+            got += r;
+        }
+        if (got != len) {
+            free(buf); write(conn, "ERR shortread\n", 14); return;
+        }
+        struct {
+            unsigned short nl_family;
+            unsigned short nl_pad;
+            unsigned int   nl_pid;
+            unsigned int   nl_groups;
+        } kaddr = { LKL_AF_NETLINK, 0, 0, 0 };
+        long rc = lkl_call(LKL_NR_sendto, fd, (long)(intptr_t)buf, len, 0,
+                           (long)(intptr_t)&kaddr);
+        /* Note: a 7. arg (addrlen=12) az lkl_call signature-jén kívül esik;
+         * néhány lkl_call wrapper csak 6 argot támogat. A bind() és a
+         * Generic Netlink protokoll a sendto-ban addr=NULL-ra a kernel-target-et
+         * defaultolja. Ezért: dest_addr=NULL, dest_addrlen=0. */
+        if (rc < 0) {
+            rc = lkl_call(LKL_NR_sendto, fd, (long)(intptr_t)buf, len, 0, 0);
+        }
+        free(buf);
+        char resp[64];
+        int n = (rc < 0)
+            ? snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -rc)
+            : snprintf(resp, sizeof(resp), "OK sent=%ld\n", rc);
+        write(conn, resp, n);
+    } else if (strcmp(op, "NLRECV") == 0) {
+        /* NLRECV <fd> <maxlen>
+         * recvfrom(fd, buf, maxlen, 0, NULL, NULL) — source addr-t ignoráljuk
+         * (a netlink msg fejléce eleve tartalmazza a PID-t). */
+        long fd; int maxlen;
+        if (sscanf(rest, "%ld %d", &fd, &maxlen) != 2 || maxlen <= 0) {
+            write(conn, "ERR badarg\n", 11); return;
+        }
+        if (maxlen > 65536) maxlen = 65536;
+        char *buf = malloc(maxlen);
+        if (!buf) { write(conn, "ERR nomem\n", 10); return; }
+        long got = lkl_call(LKL_NR_recvfrom, fd,
+                            (long)(intptr_t)buf, maxlen, 0, 0);
+        char hdr[64];
+        if (got < 0) {
+            int hn = snprintf(hdr, sizeof(hdr), "ERR errno=%ld\n", -got);
+            write(conn, hdr, hn);
+        } else {
+            int hn = snprintf(hdr, sizeof(hdr), "OK len=%ld\n", got);
+            write(conn, hdr, hn);
+            if (got > 0) write(conn, buf, got);
+        }
+        free(buf);
+    } else if (strcmp(op, "NLCLOSE") == 0) {
+        /* NLCLOSE <fd>: az LKL kernel-belső netlink fd-t zárja. */
+        long fd = atol(rest);
+        long rc = lkl_call(LKL_NR_close, fd, 0, 0, 0, 0);
+        char resp[64];
+        int n = (rc < 0)
+            ? snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -rc)
+            : snprintf(resp, sizeof(resp), "OK\n");
+        write(conn, resp, n);
+    } else if (strcmp(op, "NLSETSO") == 0) {
+        /* NLSETSO <fd> <level> <optname> <len>\n<len bytes...>
+         * setsockopt — iw/libnl ezt a NETLINK_ADD_MEMBERSHIP-hez használja. */
+        long fd; int level, optname, len;
+        if (sscanf(rest, "%ld %d %d %d", &fd, &level, &optname, &len) != 4 ||
+            len < 0 || len > 256) {
+            write(conn, "ERR badarg\n", 11); return;
+        }
+        char optbuf[256] = {0};
+        int got = 0;
+        while (got < len) {
+            ssize_t r = read(conn, optbuf + got, len - got);
+            if (r <= 0) break;
+            got += r;
+        }
+        long rc = lkl_call(LKL_NR_setsockopt, fd, level, optname,
+                           (long)(intptr_t)optbuf, len);
+        char resp[64];
+        int n = (rc < 0)
+            ? snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -rc)
+            : snprintf(resp, sizeof(resp), "OK\n");
+        write(conn, resp, n);
+    } else if (strcmp(op, "NLGETSN") == 0) {
+        /* NLGETSN <fd> — getsockname() → assigned nl_pid visszaadás.
+         * libnl-nek kell, mert kernel-assigned PID-et használ az echó-ra. */
+        long fd = atol(rest);
+        struct {
+            unsigned short nl_family;
+            unsigned short nl_pad;
+            unsigned int   nl_pid;
+            unsigned int   nl_groups;
+        } addr = {0};
+        int addrlen = sizeof(addr);
+        long rc = lkl_call(LKL_NR_getsockname, fd,
+                           (long)(intptr_t)&addr, (long)(intptr_t)&addrlen, 0, 0);
+        char resp[96];
+        int n = (rc < 0)
+            ? snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -rc)
+            : snprintf(resp, sizeof(resp), "OK pid=%u groups=%u\n",
+                       addr.nl_pid, addr.nl_groups);
+        write(conn, resp, n);
     } else {
         write(conn, "ERR unknown_op\n", 15);
     }
@@ -1596,6 +1755,82 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
 
     #undef APPEND
     return (*env)->NewStringUTF(env, out);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  USB detach az LKL kernel-ről — fizikailag eltávolított eszköz után
+ *
+ *  Ha a felhasználó kihúzza az USB-stick-et, Android-on ACTION_USB_DEVICE_
+ *  DETACHED broadcastet kapunk. Az UsbController erre meghívja ezt a JNI-t,
+ *  ami:
+ *    1) URB worker thread leállítás (sv_user close → worker exit a következő
+ *       read-en EOF-ot kap)
+ *    2) `/sys/devices/platform/vhci_hcd.0/detach` ← portszám (=0) írás
+ *       → vhci_hcd port-disconnect a kernel-szintű cleanup-pal
+ *    3) libusb handle + ctx + dup_fd zárás
+ *
+ *  Idempotens: ha nincs futó bridge, 0-t ad vissza.
+ * ──────────────────────────────────────────────────────────────────── */
+JNIEXPORT jint JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklStopUsbBridge(JNIEnv *env, jobject thiz)
+{
+    pthread_mutex_lock(&g_bridge.lock);
+    if (!g_bridge.active) {
+        pthread_mutex_unlock(&g_bridge.lock);
+        return 0;
+    }
+    LOGI("LKL stopUsbBridge: active bridge — initiating teardown");
+
+    /* 1) sv_user close → urb_worker EOF → exit ciklusból */
+    int sv_user = g_bridge.sv_user;
+    int sv_kern = g_bridge.sv_kern;
+    libusb_device_handle *h = g_bridge.handle;
+    libusb_context *c       = g_bridge.ctx;
+    int dup_fd              = g_bridge.dup_fd;
+    g_bridge.active  = 0;
+    g_bridge.sv_user = -1;
+    g_bridge.sv_kern = -1;
+    g_bridge.handle  = NULL;
+    g_bridge.ctx     = NULL;
+    g_bridge.dup_fd  = -1;
+    pthread_mutex_unlock(&g_bridge.lock);
+
+    /* close sv_user; worker thread blokk-olt read-je EOF-ot ad vissza,
+     * loopja kilép. (urb_worker pthread_detach-elt — nem join-olunk rá.) */
+    if (sv_user >= 0) {
+        shutdown(sv_user, SHUT_RDWR);
+        close(sv_user);
+    }
+
+    /* 2) vhci_hcd-nek expliciten szóljunk: detach port 0.
+     * sysfs útvonal írható ha az LKL kernel él. */
+    pthread_mutex_lock(&g_lkl.lock);
+    int kernel_alive = (g_lkl.running && g_lkl.syscall_fn != NULL);
+    pthread_mutex_unlock(&g_lkl.lock);
+    if (kernel_alive) {
+        long sysfs = lkl_open("/sys/devices/platform/vhci_hcd.0/detach", LKL_O_WRONLY);
+        if (sysfs >= 0) {
+            const char cmd[] = "0";  /* port_id 0 */
+            long w = lkl_call(LKL_NR_write, sysfs, (long)(intptr_t)cmd,
+                              (long)(sizeof(cmd) - 1), 0, 0);
+            LOGI("LKL stopUsbBridge: vhci_hcd detach write rc=%ld", w);
+            lkl_close(sysfs);
+        } else {
+            LOGI("LKL stopUsbBridge: detach sysfs open rc=%ld (esetleg már detach-elve)",
+                 sysfs);
+        }
+        /* sv_kern-t is zárjuk az LKL oldalon — ezzel a vhci_hcd kernel-thread
+         * "Connection closed" eseményt kap és tisztán leáll. */
+        if (sv_kern >= 0) lkl_close(sv_kern);
+    }
+
+    /* 3) libusb cleanup — handle + ctx + dup_fd. */
+    if (h) libusb_close(h);
+    if (c) libusb_exit(c);
+    if (dup_fd >= 0) close(dup_fd);
+
+    LOGI("LKL stopUsbBridge: teardown complete");
+    return 0;
 }
 
 /* ────────────────────────────────────────────────────────────────────

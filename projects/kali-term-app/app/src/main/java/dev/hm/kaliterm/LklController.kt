@@ -157,6 +157,19 @@ class LklController(private val context: Context) {
     }
 
     /**
+     * USB-bridge leállítása a `:lkl` process kernelében — `stopUsbBridge`
+     * Binder-call. URB worker thread, vhci_hcd port detach, libusb cleanup.
+     * Idempotens (0 = sikerült vagy már le van állítva).
+     */
+    fun stopUsbBridge(): Int {
+        val live = iface ?: return 0  // nincs bind → semmi sem fut
+        return runCatching { live.stopUsbBridge() }.getOrElse {
+            Log.w(tag, "stopUsbBridge hiba: ${it.message}")
+            -1
+        }
+    }
+
+    /**
      * Phase 2c.5e — read-only fájl-tartalom az LKL kernel fájlrendszeréből.
      * Üres stringgel tér vissza ha:
      *   - nincs Binder bind a `:lkl` Service-hez (kernel nem boot-olt még)

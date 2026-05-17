@@ -144,6 +144,15 @@ class LklService : Service() {
             }
         }
 
+        override fun stopUsbBridge(): Int {
+            return try {
+                NativeBridge.nativeLklStopUsbBridge()
+            } catch (t: Throwable) {
+                Log.e(tag, "stopUsbBridge hiba", t)
+                -1
+            }
+        }
+
         /**
          * Read-only fájl az LKL kernel fájlrendszeréből (lkl_sys_openat/read).
          * Empty stringgel tér vissza ha a kernel nem fut, vagy a fájl nem
