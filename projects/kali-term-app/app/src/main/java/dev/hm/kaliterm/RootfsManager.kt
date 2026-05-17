@@ -218,11 +218,14 @@ echo
 # Eredmény: chrooted `ls /proc` az LKL-fájl-listet adja (osrelease,
 # cpuinfo, …), DE bash a saját process-status-ját is meg tudja olvasni.
 PROC_MOUNT_ARGS=""
-if [ -d "${'$'}{LKL_PROC_DIR}" ] && [ -n "${'$'}(ls -A "${'$'}{LKL_PROC_DIR}" 2>/dev/null)" ]; then
+if [ -d "${'$'}{LKL_PROC_DIR}" ]; then
+    # AKKOR IS bind-mountolunk, ha üres — a shim opendir/readdir az LKL
+    # control-socketen át élő-listingot ad. Az üres host-mappa "üres /proc"-ot
+    # imitál, és a shim feltölti dinamikusan.
     PROC_MOUNT_ARGS="-b ${'$'}{LKL_PROC_DIR}:/proc -b /proc/self:/proc/self"
-    echo "✓ LKL /proc mirror aktív (${'$'}(find ${'$'}{LKL_PROC_DIR} -type f 2>/dev/null | wc -l) fájl)"
+    echo "✓ LKL /proc bind (${'$'}(find ${'$'}{LKL_PROC_DIR} -type f 2>/dev/null | wc -l) fájl host-mirror + shim live)"
 else
-    # Fallback: ha az LKL nem fut / kernel boot fail, host-/proc.
+    # Fallback: csak ha az LKL_PROC_DIR egyáltalán nem létezik.
     PROC_MOUNT_ARGS="-b /proc"
     echo "✗ LKL /proc mirror nincs — host /proc fallback"
 fi
@@ -231,9 +234,12 @@ fi
 # nélkül a host /sys-en a Samsung/Qualcomm Android device-fák jönnének,
 # amik a chrootban irrelevánsak.
 SYS_MOUNT_ARGS=""
-if [ -d "${'$'}{LKL_SYS_DIR}" ] && [ -n "${'$'}(ls -A "${'$'}{LKL_SYS_DIR}" 2>/dev/null)" ]; then
+if [ -d "${'$'}{LKL_SYS_DIR}" ]; then
+    # KRITIKUS: üres /sys mirror IS bind-mountolódik. A shim a libc opendir/
+    # open hívásokat LKL-routára küldi → élő LKL-sysfs. Az üres mount
+    # garantálja, hogy a host-Samsung-/sys NE leakelhessen vissza.
     SYS_MOUNT_ARGS="-b ${'$'}{LKL_SYS_DIR}:/sys"
-    echo "✓ LKL /sys mirror aktív (${'$'}(find ${'$'}{LKL_SYS_DIR} -type f 2>/dev/null | wc -l) fájl)"
+    echo "✓ LKL /sys bind (üres host-mirror + shim live LKL-routing)"
 else
     SYS_MOUNT_ARGS="-b /sys"
     echo "✗ LKL /sys mirror nincs — host /sys fallback"

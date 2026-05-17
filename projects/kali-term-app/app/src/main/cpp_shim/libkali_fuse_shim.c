@@ -505,11 +505,21 @@ int closedir(DIR *dirp)
  *  Fix: a shim átveszi a NETLINK_KOBJECT_UEVENT socket-hívást, és egy
  *  socketpair() egyik végét adja vissza. A libusb azt hiszi van udev-monitor;
  *  recvmsg sosem ad event-et (csendben blocked-pollol), DE az init megy.
+ *
+ *  KIEGÉSZÍTÉS: a libudev a fake fd-n bind() + setsockopt(SOL_NETLINK,...)-ot
+ *  hív; ezek az AF_UNIX fd-n EINVAL/ENOPROTOOPT-tal failelnek → libusb -99.
+ *  Ezért INTERCEPT-eljük a bind/setsockopt-ot is, és AF_NETLINK addr-okra
+ *  ill. SOL_NETLINK level-re NO-OP-ot adunk vissza.
  * ──────────────────────────────────────────────────────────────────── */
 static int (*r_socket)(int, int, int) = NULL;
+static int (*r_bind)(int, const struct sockaddr *, socklen_t) = NULL;
+static int (*r_setsockopt)(int, int, int, const void *, socklen_t) = NULL;
 
 #ifndef NETLINK_KOBJECT_UEVENT
 #define NETLINK_KOBJECT_UEVENT 15
+#endif
+#ifndef SOL_NETLINK
+#define SOL_NETLINK 270
 #endif
 
 int socket(int domain, int type, int protocol)
@@ -520,9 +530,33 @@ int socket(int domain, int type, int protocol)
         if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) < 0) return -1;
         /* a peer-vég (sp[1]) sosem ad data-t → recvmsg blocked-marad,
          * de NEM fail-el. A libusb init OK. */
+        fprintf(stderr, "[shim socket] fake netlink fd=%d\n", sp[0]);
         return sp[0];
     }
     return r_socket(domain, type, protocol);
+}
+
+/* bind() override — AF_NETLINK addr-okra no-op (fake netlink fd-n a bind
+ * úgyis EINVAL-lal failelne). A nem-netlink hívások passzolódnak tovább. */
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    INIT(bind);
+    if (addr && addr->sa_family == AF_NETLINK) {
+        fprintf(stderr, "[shim bind] AF_NETLINK fd=%d → no-op (OK)\n", sockfd);
+        return 0;
+    }
+    return r_bind(sockfd, addr, addrlen);
+}
+
+/* setsockopt() override — SOL_NETLINK level-re no-op (AF_UNIX fd-n a
+ * setsockopt(NETLINK_*) ENOPROTOOPT-tal failelne). */
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
+{
+    INIT(setsockopt);
+    if (level == SOL_NETLINK) {
+        return 0;
+    }
+    return r_setsockopt(sockfd, level, optname, optval, optlen);
 }
 
 /* Constructor — minden indításkor stderr-re log (egyszerű diag). */
