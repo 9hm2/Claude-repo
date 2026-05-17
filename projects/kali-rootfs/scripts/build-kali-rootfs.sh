@@ -167,6 +167,36 @@ ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
         # APK 100MB GitHub-limit. A user-nek Realtek 2357:011e device-a van;
         # ha más chipset firmware kell, apt install firmware-atheros / firmware-misc-nonfree.
 
+# 8) /lib/modules/<kver>/ kreálás — a kernel-build modules.builtin* fájlokat
+# bemásoljuk + üres modules.dep, modules.alias-t kreálunk. Ez lehetővé teszi
+# a `modprobe rtl8xxxu` típusú parancsokat — modprobe a built-in modulokat
+# is felismeri (modules.builtin-ben szerepelnek) és sikeresen visszatér.
+#
+# A kernel-build path-t a KERNEL_BUILD_DIR env-en vehetjük át; default
+# a relatíve a kali-rootfs-hez számolva.
+KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$(realpath "${DL_DIR}/../../kernel-build/build/linux-lkl")}"
+KVER="${KVER:-6.12.0-kaliterm+}"
+MODDIR="${ROOTFS_DIR}/lib/modules/${KVER}"
+if [[ -f "${KERNEL_BUILD_DIR}/modules.builtin" ]]; then
+    echo "[kali] /lib/modules/${KVER}/ build — modules.builtin* másolása"
+    ${SUDO} mkdir -p "${MODDIR}/kernel"
+    ${SUDO} cp -v "${KERNEL_BUILD_DIR}/modules.builtin" "${MODDIR}/"
+    [[ -f "${KERNEL_BUILD_DIR}/modules.builtin.modinfo" ]] && \
+        ${SUDO} cp -v "${KERNEL_BUILD_DIR}/modules.builtin.modinfo" "${MODDIR}/"
+    # Üres modules.dep, modules.alias — depmod helyettesítő minimal fájlok.
+    # modprobe ezzel built-in modulokra success-szel visszatér.
+    ${SUDO} touch "${MODDIR}/modules.dep" \
+                  "${MODDIR}/modules.alias" \
+                  "${MODDIR}/modules.symbols"
+    # depmod-szerű bin-fájlok (modprobe szereti):
+    ${SUDO} touch "${MODDIR}/modules.dep.bin" \
+                  "${MODDIR}/modules.alias.bin" \
+                  "${MODDIR}/modules.symbols.bin"
+    echo "[kali] /lib/modules/${KVER}/ kész: $(ls -1 "${MODDIR}" | wc -l) fájl"
+else
+    echo "[kali] WARN: kernel-build modules.builtin nincs (${KERNEL_BUILD_DIR}) — modprobe will not see built-in mods"
+fi
+
 echo "[kali] cleanup (qemu, cache, logs)"
 ${SUDO} rm -f  "${ROOTFS_DIR}/usr/bin/qemu-aarch64-static"
 ${SUDO} rm -rf "${ROOTFS_DIR}/var/cache/apt/archives"/*.deb \
