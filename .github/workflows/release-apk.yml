@@ -2,6 +2,7 @@ name: release-apk
 
 # Egy lépésben: a `releases/kaliterm-debug-<sha>.apk.aa` + `.ab` chunkokat
 # összerakja, és GitHub Release-t hoz létre a teljes APK-val mint asset.
+# Idempotens: ha a tag már létezik, frissíti az asset-et.
 #
 # Trigger:
 #   - manual: workflow_dispatch (GitHub UI / Actions tab "Run workflow"),
