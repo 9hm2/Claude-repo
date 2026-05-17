@@ -73,6 +73,21 @@ static DIR   *(*r_opendir)(const char *)                 = NULL;
 
 #define INIT(fn) do { if (!r_##fn) r_##fn = dlsym(RTLD_NEXT, #fn); } while (0)
 
+/* DEBUG mód env-flag-re: a stderr-üzenetek alapból CSENDESEK, hogy
+ * ne keveredjenek a Kali programok normál outputjába (pl. lsusb-ben).
+ * Bekapcsolható: KALITERM_SHIM_DEBUG=1 a launch.sh env-jében.
+ * KORÁN definiált, hogy minden lejjebb-lévő használat lássa. */
+static int shim_dbg_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("KALITERM_SHIM_DEBUG");
+        cached = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    return cached;
+}
+#define SHIM_DBG(...) do { if (shim_dbg_enabled()) fprintf(stderr, __VA_ARGS__); } while (0)
+
 /* Path-prefix-szerinti LKL-route-döntés.
  *
  * /sys, /proc: LKL-szolgáltatott élő-FS, route-eljük az LKL-be.
@@ -562,17 +577,9 @@ static int (*r_setsockopt)(int, int, int, const void *, socklen_t) = NULL;
 
 /* DEBUG mód env-flag-re: a stderr-üzenetek alapból CSENDESEK, hogy
  * ne keveredjenek a Kali programok normál outputjába (pl. lsusb-ben).
- * Bekapcsolható: KALITERM_SHIM_DEBUG=1 a launch.sh env-jében. */
-static int shim_dbg_enabled(void)
-{
-    static int cached = -1;
-    if (cached < 0) {
-        const char *e = getenv("KALITERM_SHIM_DEBUG");
-        cached = (e && e[0] && e[0] != '0') ? 1 : 0;
-    }
-    return cached;
-}
-#define SHIM_DBG(...) do { if (shim_dbg_enabled()) fprintf(stderr, __VA_ARGS__); } while (0)
+ * Bekapcsolható: KALITERM_SHIM_DEBUG=1 a launch.sh env-jében.
+ * FORWARD-MOVED: a SHIM_DBG-t a többi shim-print elé pakoltuk, lentebb
+ * már csak a fake netlink/bind/setsockopt-marad. */
 
 int socket(int domain, int type, int protocol)
 {
