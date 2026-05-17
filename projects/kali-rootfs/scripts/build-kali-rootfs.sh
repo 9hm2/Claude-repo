@@ -111,6 +111,14 @@ EOF
 #   - hwdata: usb.ids adatbázis (eltünteti az 'unable to initialize usb spec' warning-ot)
 #   - firmware-realtek: Realtek Wi-Fi/Ethernet chipek firmware-ei (non-free-firmware)
 # A `--no-install-recommends` az APK-méret féken tartására, csak ami szükséges.
+echo "[kali] copy Kali archive keyring to chroot /etc/apt/trusted.gpg.d/"
+# Az apt sqv verifikátora a chroot belsejében saját trusted.gpg.d-jét nézi;
+# a debootstrap --keyring csak az alap-csomagoknak adott GPG-jelet, NEM
+# telepítette a keyringet a rootfs-be. Másoljuk most.
+${SUDO} mkdir -p "${ROOTFS_DIR}/etc/apt/trusted.gpg.d"
+${SUDO} cp "${KEYRING_FILE}" "${ROOTFS_DIR}/etc/apt/trusted.gpg.d/kali-archive-keyring.gpg"
+${SUDO} chmod 644 "${ROOTFS_DIR}/etc/apt/trusted.gpg.d/kali-archive-keyring.gpg"
+
 echo "[kali] apt update + install (usbutils, hwdata, firmware-realtek)"
 ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
     DEBIAN_FRONTEND=noninteractive \
