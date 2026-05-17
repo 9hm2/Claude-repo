@@ -68,6 +68,7 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_NR_close         57
 #define LKL_NR_read          63
 #define LKL_NR_write         64
+#define LKL_NR_ioctl         29     /* ioctl(2) — tty TCGETS/TCSETS, USB ioctl */
 #define LKL_NR_socket       198
 #define LKL_NR_socketpair   199
 #define LKL_NR_bind         200
@@ -1218,6 +1219,44 @@ static void ctrl_handle_command(int conn, char *line)
         write(conn, hdr, hn);
         if (n > 0) write(conn, kbuf, (size_t)n);
         free(kbuf);
+    } else if (strcmp(op, "IOCTL") == 0) {
+        /* IOCTL <fd> <request> <in_size> <out_size>\n<in_size bytes>
+         * → OK len=<out_size>\n<out_size bytes>  OR  ERR errno=<n>\n
+         *
+         * Tipikus useshez (termios, winsize, modem ctrl): a buf in/out
+         * direction-tól függően az LKL syscall input + output puffereként
+         * szolgál. Max 4KB per ioctl. */
+        long fd; unsigned long ioreq;
+        int in_size, out_size;
+        if (sscanf(rest, "%ld %lu %d %d", &fd, &ioreq, &in_size, &out_size) != 4
+            || in_size < 0 || out_size < 0 || in_size > 4096 || out_size > 4096) {
+            write(conn, "ERR errno=22\n", 13); return;
+        }
+        int total_size = in_size > out_size ? in_size : out_size;
+        if (total_size == 0) total_size = 8;  /* legalább néhány byte alloc */
+        char *ibuf = malloc(total_size);
+        if (!ibuf) { write(conn, "ERR errno=12\n", 13); return; }
+        memset(ibuf, 0, total_size);
+        if (in_size > 0) {
+            int got = 0;
+            while (got < in_size) {
+                ssize_t r = read(conn, ibuf + got, in_size - got);
+                if (r <= 0) break;
+                got += r;
+            }
+        }
+        long rc = lkl_call(LKL_NR_ioctl, fd, (long)ioreq, (long)(intptr_t)ibuf, 0, 0);
+        if (rc < 0) {
+            char resp[64];
+            int n = snprintf(resp, sizeof(resp), "ERR errno=%ld\n", -rc);
+            write(conn, resp, n);
+        } else {
+            char hdr[64];
+            int n = snprintf(hdr, sizeof(hdr), "OK len=%d\n", out_size);
+            write(conn, hdr, n);
+            if (out_size > 0) write(conn, ibuf, out_size);
+        }
+        free(ibuf);
     } else if (strcmp(op, "NLOPEN") == 0) {
         /* NLOPEN <type> <protocol> → AF_NETLINK socket az LKL kernelben.
          * iw/wpa_supplicant/libnl ezt használja a cfg80211 driver-okhoz.

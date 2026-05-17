@@ -115,7 +115,15 @@ static int is_virt_fs_path(const char *p);
  * ring-buffer-jét akarja kiolvasni. Ezt explicit LKL-routon küldjük át. */
 static int is_lkl_path(const char *path)
 {
-    if (path && strcmp(path, "/dev/kmsg") == 0) return 1;
+    if (!path) return 0;
+    if (strcmp(path, "/dev/kmsg") == 0) return 1;
+    /* TTY-eszközök az LKL kernel-by-driverenek (FTDI ttyUSB, CDC-ACM, stb.).
+     * A chrooted /dev statikus mirror-bind, regular-file → ioctl(TCGETS,..)
+     * "Inappropriate ioctl for device"-szal fail-el. LKL-route → valódi
+     * tty character device viselkedés. */
+    if (strncmp(path, "/dev/ttyUSB", 11) == 0) return 1;
+    if (strncmp(path, "/dev/ttyACM", 11) == 0) return 1;
+    if (strncmp(path, "/dev/ttyS",   9) == 0 && path[9] >= '0' && path[9] <= '9') return 1;
     return 0;
 }
 
@@ -624,6 +632,71 @@ static int (*r_ioctl)(int, unsigned long, ...) = NULL;
 int my_ioctl_impl(int fd, unsigned long request, ...);
 __asm__(".globl ioctl\n\t.set ioctl, my_ioctl_impl");
 
+/* Linux ioctl request → (in_size, out_size) lookup.
+ * Common tty / serial / USB ioctls hardcoded; minden más esetben a
+ * Linux ioctl-encoding _IOC_DIR/_IOC_SIZE bitjeit nézzük. */
+static void ioctl_sizes(unsigned long request, int *in_size, int *out_size)
+{
+    /* TTY (termios) */
+    if (request == 0x5401) { *in_size = 0;   *out_size = 60; return; } /* TCGETS */
+    if (request == 0x5402 || request == 0x5403 || request == 0x5404) {
+        *in_size = 60; *out_size = 0; return; }                       /* TCSETS{,W,F} */
+    if (request == 0x5413) { *in_size = 0;   *out_size = 8;  return; } /* TIOCGWINSZ */
+    if (request == 0x5414) { *in_size = 8;   *out_size = 0;  return; } /* TIOCSWINSZ */
+    if (request == 0x5415) { *in_size = 0;   *out_size = 4;  return; } /* TIOCMGET */
+    if (request == 0x5418) { *in_size = 4;   *out_size = 0;  return; } /* TIOCMSET */
+    if (request == 0x5416) { *in_size = 4;   *out_size = 0;  return; } /* TIOCMBIS */
+    if (request == 0x5417) { *in_size = 4;   *out_size = 0;  return; } /* TIOCMBIC */
+    if (request == 0x541b) { *in_size = 0;   *out_size = 4;  return; } /* FIONREAD */
+    if (request == 0x5421) { *in_size = 0;   *out_size = 0;  return; } /* FIONBIO no-arg */
+    if (request == 0x5409) { *in_size = 0;   *out_size = 0;  return; } /* TCSBRK */
+    if (request == 0x540B) { *in_size = 0;   *out_size = 0;  return; } /* TCFLUSH */
+    /* Új-stílus _IOC_*: bits 16-29 = size, 30-31 = dir */
+    int dir  = (int)((request >> 30) & 0x3);
+    int size = (int)((request >> 16) & 0x3fff);
+    /* dir: 0=none, 1=write(in), 2=read(out), 3=read+write */
+    if (size > 0 && size <= 4096) {
+        *in_size  = (dir & 1) ? size : 0;
+        *out_size = (dir & 2) ? size : 0;
+        return;
+    }
+    *in_size = 0; *out_size = 0;
+}
+
+static int lkl_ioctl_via_socket(struct lkl_slot *s, unsigned long request, void *arg)
+{
+    int in_size = 0, out_size = 0;
+    ioctl_sizes(request, &in_size, &out_size);
+    if (in_size < 0 || out_size < 0 || in_size > 4096 || out_size > 4096) {
+        errno = EINVAL; return -1;
+    }
+    char req[96];
+    int rn = snprintf(req, sizeof(req), "IOCTL %ld %lu %d %d\n",
+                      s->lkl_fd, request, in_size, out_size);
+    if (write(s->sock, req, rn) != rn) { errno = EIO; return -1; }
+    if (in_size > 0) {
+        if (write(s->sock, arg, in_size) != (ssize_t)in_size) { errno = EIO; return -1; }
+    }
+    char hdr[64];
+    if (read_line(s->sock, hdr, sizeof(hdr)) <= 0) { errno = EIO; return -1; }
+    int got_out = -1;
+    if (sscanf(hdr, "OK len=%d", &got_out) == 1) {
+        if (got_out > 0 && arg) {
+            INIT(read);
+            int total = 0;
+            while (total < got_out) {
+                ssize_t r = r_read(s->sock, (char *)arg + total, got_out - total);
+                if (r <= 0) break;
+                total += r;
+            }
+        }
+        return 0;
+    }
+    int err = 0; sscanf(hdr, "ERR errno=%d", &err);
+    errno = err ? err : EIO;
+    return -1;
+}
+
 int my_ioctl_impl(int fd, unsigned long request, ...)
 {
     if (!r_ioctl) r_ioctl = dlsym(RTLD_NEXT, "ioctl");
@@ -631,11 +704,16 @@ int my_ioctl_impl(int fd, unsigned long request, ...)
     void *arg = va_arg(ap, void *);
     va_end(ap);
     if (fd < MAGIC_FD_BASE) return r_ioctl(fd, request, arg);
-    /* Magic-fd-re: tipikus libnl ioctl (SIOCGSTAMP, FIONREAD) — no-op
-     * 0-val, hogy a flow-t ne abort-olja. Strict-ioctl-igényű hívásokra
-     * (tty TCGETS, stb.) ENOTTY-t adunk. */
+
+    /* LKL-routed file fd (tty, char dev, blk dev) → IOCTL control-socket. */
+    struct lkl_slot *s = get_slot(fd);
+    if (s) {
+        return lkl_ioctl_via_socket(s, request, arg);
+    }
+
+    /* NL/KMSG magic-fd-re: minimum kompatibilitás. */
     switch (request) {
-    case 0x541b:  /* FIONREAD — bytes available; legbiztonságosabb 0 */
+    case 0x541b:  /* FIONREAD — 0 bytes available */
         if (arg) *(int *)arg = 0;
         return 0;
     default:
