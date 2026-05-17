@@ -66,23 +66,30 @@ static DIR   *(*r_opendir)(const char *)                 = NULL;
 
 #define INIT(fn) do { if (!r_##fn) r_##fn = dlsym(RTLD_NEXT, #fn); } while (0)
 
-/* Path-prefix-szerinti LKL-route-döntés. */
+/* Path-prefix-szerinti LKL-route-döntés.
+ *
+ * /sys, /proc: LKL-szolgáltatott élő-FS, route-eljük az LKL-be.
+ *
+ * /dev/bus: NE LKL-route! Az LKL devtmpfs-en NINCS /dev/bus/usb (udev kreálná
+ * a host-Linuxon). A user-mode mirror-megközelítés szolgáltatja a placeholder-
+ * fát; a shim ne menjen LKL-be — fel-bukna ENOENT-en. */
 static int is_lkl_path(const char *path)
 {
     if (!path) return 0;
     if (path[0] != '/') return 0;
-    /* "/sys", "/sys/...", "/proc", "/proc/...", "/dev/bus", "/dev/bus/..." */
     if (strncmp(path, "/sys", 4) == 0 && (path[4] == '/' || path[4] == 0)) return 1;
     if (strncmp(path, "/proc", 5) == 0 && (path[5] == '/' || path[5] == 0)) return 1;
-    if (strncmp(path, "/dev/bus", 8) == 0 && (path[8] == '/' || path[8] == 0)) return 1;
     return 0;
 }
 
-/* Unix-socket connect. -1 ha nincs socket. */
+/* Unix-socket connect. SO_RCVTIMEO/SO_SNDTIMEO 2 sec — dead server NE blokkoljon. */
 static int sock_connect(void)
 {
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s < 0) return -1;
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;

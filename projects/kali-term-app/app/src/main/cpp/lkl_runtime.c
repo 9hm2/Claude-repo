@@ -1136,6 +1136,26 @@ static void ctrl_handle_command(int conn, char *line)
     }
 }
 
+static void *ctrl_per_conn(void *arg)
+{
+    int conn = (int)(intptr_t)arg;
+    char buf[2048];
+    while (1) {
+        ssize_t n = read(conn, buf, sizeof(buf) - 1);
+        if (n <= 0) break;
+        buf[n] = 0;
+        char *line = buf;
+        char *nl;
+        while ((nl = strchr(line, '\n')) != NULL) {
+            *nl = 0;
+            if (*line) ctrl_handle_command(conn, line);
+            line = nl + 1;
+        }
+    }
+    close(conn);
+    return NULL;
+}
+
 static void *ctrl_thread_fn(void *arg)
 {
     (void)arg;
@@ -1145,21 +1165,14 @@ static void *ctrl_thread_fn(void *arg)
             if (errno == EINTR) continue;
             break;
         }
-        /* one-shot command loop per connection */
-        char buf[2048];
-        while (1) {
-            ssize_t n = read(conn, buf, sizeof(buf) - 1);
-            if (n <= 0) break;
-            buf[n] = 0;
-            char *line = buf;
-            char *nl;
-            while ((nl = strchr(line, '\n')) != NULL) {
-                *nl = 0;
-                if (*line) ctrl_handle_command(conn, line);
-                line = nl + 1;
-            }
+        /* Per-conn detached thread — egyetlen lassú/dead client NEM blokkolja
+         * a többi connect()-et. Detached, mert join-olást nem várunk. */
+        pthread_t pt;
+        if (pthread_create(&pt, NULL, ctrl_per_conn, (void *)(intptr_t)conn) == 0) {
+            pthread_detach(pt);
+        } else {
+            close(conn);
         }
-        close(conn);
     }
     return NULL;
 }

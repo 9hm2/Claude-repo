@@ -376,18 +376,39 @@ class KaliShellService : Service() {
         }
         val sysHit = 10
 
-        // /dev — MINIMAL skeleton. A shim a /dev/bus-prefixű hívásokat
-        // LKL-be route-eli, de mivel az LKL devtmpfs-en nincs /dev/bus/usb
-        // udev-fa (azt userspace udev kreálná), a placeholder-megközelítés
-        // marad: /dev/bus/usb/<bus>/<dev> üres-fájl-fa a host-on, és a launch.sh
-        // bind-mountolja a host-/dev/{null,zero,urandom,tty,ptmx,pts,fd,…}-t.
+        // /dev — MINIMAL skeleton + /dev/bus/usb/<bus>/<dev> placeholder.
+        // A shim a /dev/bus-ot SZÁNDÉKOSAN NEM LKL-be route-eli (az LKL
+        // devtmpfs-en nincs /dev/bus/usb — udev kreálná). Itt host-fájl-fát
+        // szolgáltatunk az LKL /sys/bus/usb/devices/* busnum+devnum alapján
+        // (Binder-en lekérve). A libusb a sysfs-back-enddel ezt enumerálja.
         val devMirror = File(rootfs.prootTmpDir, "lkl-dev")
         devMirror.deleteRecursively()
         devMirror.mkdirs()
         for (dn in listOf("bus", "bus/usb", "pts", "shm", "input", "snd", "dri", "net")) {
             File(devMirror, dn).mkdirs()
         }
-        val devHit = 8
+        var devHit = 8
+        try {
+            val usbDevs = runCatching { iface.listLklDir("/sys/bus/usb/devices") }
+                .getOrDefault("").lines().filter { it.isNotBlank() }
+            for (devName in usbDevs) {
+                val busnum = runCatching { iface.readLklFile("/sys/bus/usb/devices/${devName.trim()}/busnum") }
+                    .getOrDefault("").trim()
+                val devnum = runCatching { iface.readLklFile("/sys/bus/usb/devices/${devName.trim()}/devnum") }
+                    .getOrDefault("").trim()
+                if (busnum.isNotEmpty() && devnum.isNotEmpty()) {
+                    val bus3 = busnum.padStart(3, '0')
+                    val dev3 = devnum.padStart(3, '0')
+                    val node = File(devMirror, "bus/usb/$bus3/$dev3")
+                    node.parentFile?.mkdirs()
+                    runCatching { node.writeText("") }
+                    devHit++
+                }
+            }
+            Log.i(tag, "/dev/bus/usb placeholders: $devHit (incl skeleton)")
+        } catch (t: Throwable) {
+            Log.w(tag, "/dev/bus/usb populate error: ${t.message}")
+        }
 
         // /dev/bus/usb/<busnum>/<devnum> placeholder-fa — a libusb és lsusb
         // ezt enumerálja (USBDEVFS-szabvány). Az LKL devtmpfs nem populálja,
