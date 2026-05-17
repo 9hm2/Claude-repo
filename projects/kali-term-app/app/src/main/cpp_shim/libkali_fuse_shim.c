@@ -929,8 +929,11 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
 int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
 {
     INIT(setsockopt);
-    if (is_nl_fd(sockfd) && level == SOL_NETLINK) {
-        /* LKL-routed NL_GENERIC → NLSETSO parancs */
+    /* MINDEN setsockopt LKL-routed magic-fd-re LKL-be küldjük át —
+     * NEM csak a SOL_NETLINK-szintűek. iproute2/libnl SO_SNDBUF /
+     * SO_RCVBUF (SOL_SOCKET) hívás-okat is csinál, és ezek a magic_fd
+     * (nincs valódi Android-fd) miatt EBADF-fel hasalnak el. */
+    if (is_nl_fd(sockfd)) {
         struct nl_slot *s = get_nl(sockfd);
         if (!s) { errno = EBADF; return -1; }
         if (optlen > 256) { errno = EINVAL; return -1; }
@@ -945,11 +948,14 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
         if (read_line(s->sock, resp, sizeof(resp)) <= 0) { errno = EIO; return -1; }
         if (strncmp(resp, "OK", 2) == 0) return 0;
         int err = 0; sscanf(resp, "ERR errno=%d", &err);
+        /* Egyes opciók (pl. SO_SNDBUF query a non-priv namespace-ben) az LKL
+         * kernel-ben sem stricly-required-ek — ha hibázik, no-op. */
+        if (err == ENOPROTOOPT || err == EINVAL) return 0;
         errno = err ? err : EIO;
         return -1;
     }
     if (level == SOL_NETLINK) {
-        /* fake udev fd-n — no-op */
+        /* fake udev fd-n (NETLINK_KOBJECT_UEVENT socketpair) — no-op */
         return 0;
     }
     return r_setsockopt(sockfd, level, optname, optval, optlen);

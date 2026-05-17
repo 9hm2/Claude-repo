@@ -56,8 +56,10 @@ class RootfsManager(private val ctx: Context) {
      *    - net-tools, iproute2, kmod, iw, wireless-tools, wpasupplicant
      *    - rfkill, pciutils, util-linux
      *    - /lib/modules/6.12.0-kaliterm+/ + modules.builtin* + depmod-generált
-     *      modules.builtin.alias.bin → modprobe rtl8xxxu/btusb/ath9k_htc → exit 0 */
-    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready-v4")
+     *      modules.builtin.alias.bin → modprobe rtl8xxxu/btusb/ath9k_htc → exit 0
+     *  - v5: out-of-tree rtl8812au driver beépítve (RTL8821AU 2357:011e), új
+     *      modules.builtin tartalmazza a 8812au.ko-t. */
+    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready-v5")
 
     /**
      * A proot binary helye — a `nativeLibraryDir`, NEM a `filesDir`.
