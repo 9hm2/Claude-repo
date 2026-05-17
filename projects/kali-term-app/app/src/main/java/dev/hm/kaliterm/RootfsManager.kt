@@ -256,39 +256,22 @@ else
     echo "✗ LKL /proc mirror nincs — host /proc fallback"
 fi
 
-# /sys mirror — ugyanaz a pattern mint /proc-nál. Az LKL kernel-fa
-# nélkül a host /sys-en a Samsung/Qualcomm Android device-fák jönnének,
-# amik a chrootban irrelevánsak.
-# /sys mount — HIBRID: Android real-sysfs base + LKL-overlay USB/class-on.
+# /sys mount — TELJESEN az LKL-materialized mirror-ből.
 #
-# Indok: a libusb (és sok más Linux-tool) statfs("/sys") MAGIC-check-kel
-# ellenőrzi a filesystem-típust. Ha != SYSFS_MAGIC (0x62656572), 'sysfs
-# not mounted'-nak veszi és kihagyja az enumerációt. proot bind-mount
-# csak path-translation, NEM real-mount; a bind-mountolt /sys
-# alaprétege ext4/f2fs marad → libusb fail.
+# Korábbi "hibrid" megközelítés (-b /sys mint base) az Android valódi
+# /sys-ét bindelte, ami SELinux-restrikció miatt app-UID-nek
+# "Permission denied"-ot ad → `ls /sys/` kudarc → user-frusztráció.
 #
-# Megoldás: az Android /sys VALÓDI sysfs-mount → ezt bindeljük base-ként.
-# Erre overlay-elünk a LKL-adatainkkal a /sys/bus/usb és /sys/class
-# alpath-okon. proot rule: későbbi -b nyer az korábbi felett, így
-# specifikus alpath-on átveszi a LKL-data, a többi /sys host-from-Android.
-#
-# Ezzel: statfs("/sys")=SYSFS_MAGIC ✓ + /sys/bus/usb=LKL-fa ✓.
+# A statfs("/sys") SYSFS_MAGIC-check problémáját a libkali_fuse_shim.so
+# explicit statfs-intercepttel oldja meg (lásd shim statfs()), így nem
+# szükséges Android-host /sys real-sysfs-mountja.
 SYS_MOUNT_ARGS=""
-if [ -d "${'$'}{LKL_SYS_DIR}/bus/usb" ]; then
-    SYS_MOUNT_ARGS="-b /sys"
-    # Overlay specifikus subpath-okat az LKL-mirror-ből:
-    for sub in bus/usb class/usb class/usbmisc class/hidraw devices/platform/vhci_hcd.0; do
-        if [ -d "${'$'}{LKL_SYS_DIR}/${'$'}{sub}" ]; then
-            SYS_MOUNT_ARGS="${'$'}{SYS_MOUNT_ARGS} -b ${'$'}{LKL_SYS_DIR}/${'$'}{sub}:/sys/${'$'}{sub}"
-        fi
-    done
-    echo "✓ /sys hibrid: Android-host base + LKL-overlay (bus/usb, class/usb, vhci_hcd.0)"
-elif [ -d "${'$'}{LKL_SYS_DIR}" ]; then
+if [ -d "${'$'}{LKL_SYS_DIR}" ] && [ -n "${'$'}(ls -A "${'$'}{LKL_SYS_DIR}" 2>/dev/null)" ]; then
     SYS_MOUNT_ARGS="-b ${'$'}{LKL_SYS_DIR}:/sys"
-    echo "⚠ LKL /sys bind (csak materialize, statfs MAGIC=ext4 → libusb 'sysfs not mounted')"
+    echo "✓ LKL /sys teljes bind (shim statfs() biztosítja a SYSFS_MAGIC-et)"
 else
     SYS_MOUNT_ARGS="-b /sys"
-    echo "✗ LKL /sys mirror nincs — host /sys fallback"
+    echo "✗ LKL /sys mirror nincs — host /sys fallback (SELinux blokk-ot kockáztat)"
 fi
 
 # /dev — az LKL kernel device-listet mirror-eljük; a working char-device-eket
