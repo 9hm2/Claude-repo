@@ -50,10 +50,13 @@ class RootfsManager(private val ctx: Context) {
      *  a marker-név bump-olásával RÁKÉNYSZERÍTJÜK az appot az új tar.xz
      *  kibontására (a régi rootfs marker-jét nem találja → re-extract).
      *
-     *  v2 (2026-05-17): a build-kali-rootfs.sh-ban előre felhúzva:
+     *  v3 (2026-05-17, sajnos delelőtt):
      *    - sources.list = main + contrib + non-free + non-free-firmware
-     *    - usbutils + hwdata (full usb.ids) + firmware-realtek pre-installed */
-    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready-v2")
+     *    - usbutils + hwdata (full usb.ids) + firmware-realtek
+     *    - net-tools, iproute2, kmod, iw, wireless-tools, wpasupplicant
+     *    - rfkill, pciutils, util-linux
+     *    - /lib/modules/6.12.0-kaliterm+/ + modules.builtin* */
+    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready-v3")
 
     /**
      * A proot binary helye — a `nativeLibraryDir`, NEM a `filesDir`.
