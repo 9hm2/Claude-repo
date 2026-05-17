@@ -370,8 +370,9 @@ DIR *opendir(const char *path)
     INIT(opendir);
     if (!is_lkl_path(path)) return r_opendir(path);
 
+    fprintf(stderr, "[shim opendir LKL] %s\n", path);
     int sock = sock_connect();
-    if (sock < 0) return r_opendir(path);
+    if (sock < 0) { fprintf(stderr, "[shim opendir] sock fail → real\n"); return r_opendir(path); }
     char req[1280];
     int rn = snprintf(req, sizeof(req), "LISTDIR %s\n", path);
     if (write(sock, req, rn) != rn) {
@@ -380,6 +381,7 @@ DIR *opendir(const char *path)
     char first[128];
     if (read_line(sock, first, sizeof(first)) <= 0 ||
         strncmp(first, "OK", 2) != 0) {
+        fprintf(stderr, "[shim opendir] LKL ERR: %s\n", first);
         close(sock); errno = ENOENT; return NULL;
     }
 

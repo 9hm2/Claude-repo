@@ -354,15 +354,17 @@ class KaliShellService : Service() {
             return null
         }
 
-        // /proc — TOP-szintű placeholder-listing. A `ls /proc` ezt mutatja
-        // (user-élmény: teljes LKL /proc-fa enumerálva), a `cat /proc/cpuinfo`
-        // a shim-en át LIVE LKL-tartalmat ad. NEM rekurzív → gyors populate.
+        // /proc — ÜRES mirror-mappa. A shim opendir/readdir + open/read mind
+        // INTERCEPT-elve, az LKL-control-socketen át élő-listingot ad. A proot
+        // bind-mountolja az üres mappát /proc-ra, a chrooted programok mind a
+        // shim-en át mennek. SAJÁT helyettesítés: /proc/mounts és osrelease,
+        // mert ezek host-szempontból specifikusak (proot --kernel-release,
+        // libusb 'sysfs not mounted' check).
         val procMirror = File(rootfs.prootTmpDir, "lkl-proc")
         procMirror.deleteRecursively()
         procMirror.mkdirs()
         File(procMirror, "sys/kernel").mkdirs()
         File(procMirror, "sys/kernel/osrelease").writeText("$osrelease\n")
-        // /proc/mounts standardizálva — libusb 'sysfs not mounted' fix
         File(procMirror, "mounts").writeText(
             "rootfs / rootfs rw 0 0\n" +
             "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n" +
@@ -372,74 +374,15 @@ class KaliShellService : Service() {
         )
         File(procMirror, "self").mkdirs()
         File(procMirror, "self/mounts").writeText(File(procMirror, "mounts").readText())
-        // Top-szintű files placeholder-ként — a shim open-en LIVE-tartalmat ad
-        val procTopFiles = runCatching { iface.listLklDir("/proc") }
-            .getOrDefault("").lines().filter { it.isNotBlank() }.take(80)
-        var procHit = 3
-        for (entry in procTopFiles) {
-            val name = entry.trim()
-            if (name == "." || name == "..") continue
-            if (name.all { it.isDigit() }) continue  // PID-mappák skip
-            if (name == "self" || name == "mounts") continue  // már megvan
-            val out = File(procMirror, name)
-            if (!out.exists()) {
-                // Megpróbáljuk megtudni mappa-e
-                val sub = runCatching { iface.listLklDir("/proc/$name") }.getOrDefault("")
-                if (sub.isNotBlank()) out.mkdirs() else out.writeText("")
-                procHit++
-            }
-        }
-        Log.i(tag, "LKL /proc top-listing: $procHit entry (shim ad live-tartalmat)")
+        val procHit = 3
+        Log.i(tag, "LKL /proc empty-bind: shim adja az élő enumeráció+olvasást")
 
-        // /sys — TOP-szintű placeholder-listing rekurzív 2-szintig (class, bus,
-        // devices belül a fontos kategóriák — usb, tty, net, …).
+        // /sys — ÜRES mirror-mappa (shim adja az élő enumerálást és olvasást)
         val sysMirror = File(rootfs.prootTmpDir, "lkl-sys")
         sysMirror.deleteRecursively()
         sysMirror.mkdirs()
-        listOf("bus", "class", "dev", "devices", "firmware", "fs",
-               "kernel", "module", "power", "block").forEach {
-            File(sysMirror, it).mkdirs()
-        }
-        var sysHit = 10
-        // /sys/class/{net,tty,usbmisc,…} és /sys/bus/{usb,...}/devices/* — populáljuk
-        for (subPath in listOf("class", "bus", "devices/platform", "block")) {
-            val entries = runCatching { iface.listLklDir("/sys/$subPath") }
-                .getOrDefault("").lines().filter { it.isNotBlank() }.take(60)
-            for (e in entries) {
-                val name = e.trim()
-                if (name == "." || name == "..") continue
-                val out = File(sysMirror, "$subPath/$name")
-                out.mkdirs()
-                sysHit++
-                // /sys/bus/*/devices is bővítve
-                if (subPath == "bus") {
-                    val devsDir = File(sysMirror, "bus/$name/devices")
-                    devsDir.mkdirs()
-                    val devs = runCatching { iface.listLklDir("/sys/bus/$name/devices") }
-                        .getOrDefault("").lines().filter { it.isNotBlank() }.take(40)
-                    for (d in devs) {
-                        val dname = d.trim()
-                        if (dname.isNotEmpty()) {
-                            File(devsDir, dname).mkdirs()
-                            sysHit++
-                        }
-                    }
-                }
-                // /sys/class/<name>/ alkönyvtárak
-                if (subPath == "class") {
-                    val items = runCatching { iface.listLklDir("/sys/class/$name") }
-                        .getOrDefault("").lines().filter { it.isNotBlank() }.take(40)
-                    for (it in items) {
-                        val iname = it.trim()
-                        if (iname.isNotEmpty()) {
-                            File(out, iname).mkdirs()
-                            sysHit++
-                        }
-                    }
-                }
-            }
-        }
-        Log.i(tag, "LKL /sys top-listing: $sysHit entry (shim ad live-tartalmat)")
+        val sysHit = 0
+        Log.i(tag, "LKL /sys empty-bind: shim adja az élő enumeráció+olvasást")
 
         // /dev — TOP-szintű placeholder-listing (LKL devtmpfs top-elemei).
         // Plus /dev/bus/usb/<bus>/<dev> a /sys/bus/usb/devices alapján.
