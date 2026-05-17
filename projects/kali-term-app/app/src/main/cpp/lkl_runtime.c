@@ -1794,8 +1794,8 @@ static int is_skip_entry(const char *name)
         "pagetypeinfo",        /* lassú */
         "sysrq-trigger",       /* triggers magic-key */
         "interrupts",          /* read-OK de lassú nagy CPU-szám esetén */
-        /* sysfs lassú scan-jek */
-        "uevent",              /* udev-stílusú dump, sokszor üres marad */
+        /* sysfs lassú scan-jek (NOTE: 'uevent' KIVÉVE — a libudev a
+         * device discovery-hez ENUMERÁCIÓKOR olvassa, hiányában 0 device.) */
         "trace_pipe",          /* blokkoló stream */
         "trace_pipe_raw",
         "trigger", "trigger0", /* tracing-trigger-ek */
