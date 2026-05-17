@@ -118,6 +118,11 @@ static int is_lkl_path(const char *path)
     return 0;
 }
 
+/* Forward declarations — a sock_connect és read_line lentebb vannak
+ * definiálva, de a /dev/kmsg-handlerből hívjuk őket. */
+static int sock_connect(void);
+static ssize_t read_line(int sock, char *buf, size_t bufsz);
+
 /* Speciálisan a /dev/kmsg-re: a control-socket KMSG parancsa az LKL
  * syslog(2) hívást futtatja és visszaadja a ring-buffer-t. A shim
  * egyszerűsíti az open-flow-t — nincs OPEN/READ-cycle, egy hívásban
