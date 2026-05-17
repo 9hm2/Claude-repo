@@ -37,6 +37,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/time.h>
+#include <sys/select.h>
 #include <linux/netlink.h>
 #include <dirent.h>
 
@@ -84,22 +85,54 @@ static int is_lkl_path(const char *path)
     return 0;
 }
 
-/* Unix-socket connect. SO_RCVTIMEO/SO_SNDTIMEO 2 sec — dead server NE blokkoljon. */
+/* Unix-socket connect. Non-blocking + select(2-sec) — dead server NE fagyasszon
+ * be hangin' connectet. A SO_RCVTIMEO/SO_SNDTIMEO csak read/write-ra hat,
+ * a connect maga blokkolhat (pl. accept queue full vagy féltermálkott peer);
+ * ezért használjuk az O_NONBLOCK + select kombinációt.
+ *
+ * Az SO_RCVTIMEO/SO_SNDTIMEO továbbra is be van állítva a sikeres connect
+ * UTÁN, hogy a read_line/write is timeoutolható legyen. */
 static int sock_connect(void)
 {
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
     if (s < 0) return -1;
-    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    /* Non-blocking connect */
+    int fl = fcntl(s, F_GETFL, 0);
+    if (fl < 0 || fcntl(s, F_SETFL, fl | O_NONBLOCK) < 0) {
+        close(s); return -1;
+    }
+
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SOCK_PATH, sizeof(addr.sun_path) - 1);
-    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+
+    int rc = connect(s, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc == 0) {
+        /* connect azonnal sikerült (Unix-socket: tipikus) */
+    } else if (errno == EINPROGRESS) {
+        /* várjuk meg max 2 sec-ig hogy összejöjjön */
+        fd_set wfd; FD_ZERO(&wfd); FD_SET(s, &wfd);
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+        int sel = select(s + 1, NULL, &wfd, NULL, &tv);
+        if (sel <= 0) {
+            int e = errno; close(s); errno = (sel == 0) ? ETIMEDOUT : e;
+            return -1;
+        }
+        int err = 0; socklen_t errlen = sizeof(err);
+        getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &errlen);
+        if (err != 0) { close(s); errno = err; return -1; }
+    } else {
         int e = errno; close(s); errno = e;
         return -1;
     }
+
+    /* Visszaállítjuk blockingre + read/write timeoutok */
+    fcntl(s, F_SETFL, fl);
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     return s;
 }
 

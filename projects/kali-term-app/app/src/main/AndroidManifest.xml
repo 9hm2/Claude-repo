@@ -14,6 +14,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- A :lkl process foreground service-ként fut, hogy az Android NE lője
+         ki a kernel state-tel együtt. targetSdk=28 mellett POST_NOTIFICATIONS
+         implicit garantált, így nem kell külön kérelmezni. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
     <application
         android:name=".KaliApplication"
         android:allowBackup="false"

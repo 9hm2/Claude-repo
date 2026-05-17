@@ -314,16 +314,22 @@ class KaliShellService : Service() {
     }
 
     private fun populateLklProcMirror(rootfs: RootfsManager): String? {
-        // Bind-el ha még nincs
+        // Bind-el ha még nincs. ELŐSZÖR startForegroundService — ezzel STARTED
+        // állapotba kerül a :lkl, és foreground-notification-nel él tovább
+        // akkor is, ha minden bind elengedjük. Csak ezután bind-elünk a
+        // Binder-cache-hez. (Korábban csak BIND_AUTO_CREATE volt → :lkl 3-5
+        // sec után GC-killed, a chrooted shim halott socketre kapcsolódott.)
         if (lklIface == null) {
             try {
-                bindService(
-                    Intent(this, LklService::class.java),
-                    lklConn,
-                    Context.BIND_AUTO_CREATE,
-                )
+                val intent = Intent(this, LklService::class.java)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+                bindService(intent, lklConn, Context.BIND_AUTO_CREATE)
             } catch (t: Throwable) {
-                Log.w(tag, "LklService bind failed: ${t.message}")
+                Log.w(tag, "LklService start/bind failed: ${t.message}")
                 return null
             }
         }
