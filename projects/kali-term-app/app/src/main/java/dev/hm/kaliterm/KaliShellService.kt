@@ -456,31 +456,58 @@ class KaliShellService : Service() {
             File(sysMirror, it).mkdirs()
         }
 
-        // libudev device discovery: minden /sys/bus/usb/devices/<X> entry-ben
-        // KÖTELEZŐ a "subsystem" symlink — a libudev ezt használja az
-        // udev_enumerate_add_match_subsystem("usb") filterhez. Hiányában a
-        // device NEM kerül be a match-list-be, és lsusb 0 device-t ad.
+        // libudev device discovery — real-sysfs struktúrát kell utánoznunk:
         //
-        // A symlink target a /sys/bus/usb-ra mutat. Sysfs konvenció szerint
-        // relatív path-szal, hogy proot-bind-mount sem zavarja meg.
+        // Real sysfs:
+        //   /sys/bus/usb/devices/usbN       SYMLINK → ../../../devices/platform/vhci_hcd.0/usbN
+        //   /sys/devices/platform/vhci_hcd.0/usbN/subsystem   SYMLINK → ../../../../bus/usb
+        //   /sys/devices/platform/vhci_hcd.0/usbN/{busnum,devnum,uevent,...}  attribútumok
+        //
+        // Sorrend: ELŐSZÖR subsystem-link a kanonikus path-ba, AZTÁN
+        // konvertáljuk az /sys/bus/usb/devices/usbN-t symlinkre a
+        // kanonikusra. (Fordított sorrendben a subsystem-link törlődne
+        // a regular-dir delete-rel.)
         try {
-            val usbDevicesDir = File(sysMirror, "bus/usb/devices")
-            usbDevicesDir.listFiles()?.forEach { devDir ->
-                if (!devDir.isDirectory) return@forEach
-                val ssLink = File(devDir, "subsystem")
+            val canonicalParent = File(sysMirror, "devices/platform/vhci_hcd.0")
+            // (1) Subsystem symlinkek a kanonikus device-dir-ekben:
+            //     /sys/devices/platform/vhci_hcd.0/usbN/subsystem → ../../../../bus/usb
+            canonicalParent.listFiles()?.forEach { canDir ->
+                if (!canDir.isDirectory) return@forEach
+                val name = canDir.name
+                if (!name.startsWith("usb")) return@forEach
+                val ssLink = File(canDir, "subsystem")
                 if (!ssLink.exists()) {
-                    // /sys/bus/usb/devices/<X>/subsystem → ../../../../bus/usb
-                    // (4 szint visszafelé: <X> → devices → usb → bus → /sys gyökér)
                     try {
                         Os.symlink("../../../../bus/usb", ssLink.absolutePath)
                     } catch (t: Throwable) {
-                        Log.w(tag, "subsystem symlink fail (${devDir.name}): ${t.message}")
+                        Log.w(tag, "canonical subsystem symlink fail ($name): ${t.message}")
                     }
                 }
             }
-            KaliInitLog.add("usb-dev", "subsystem symlinks kreálva /sys/bus/usb/devices/*/")
+
+            // (2) Az /sys/bus/usb/devices/usbN entry-eket konvertáljuk
+            //     symlinkre, hogy a libudev lstat-ja S_ISLNK == true-t adjon.
+            val busDevicesDir = File(sysMirror, "bus/usb/devices")
+            busDevicesDir.listFiles()?.forEach { devDir ->
+                val name = devDir.name
+                if (!name.startsWith("usb") || ':' in name) return@forEach
+                val canDir = File(canonicalParent, name)
+                if (canDir.isDirectory && devDir.isDirectory &&
+                    !java.nio.file.Files.isSymbolicLink(devDir.toPath()))
+                {
+                    // Töröljük a regular dir-t (a tartalom megvan a kanonikus path-on)
+                    devDir.deleteRecursively()
+                    try {
+                        // /sys/bus/usb/devices/usbN → ../../../devices/platform/vhci_hcd.0/usbN
+                        Os.symlink("../../../devices/platform/vhci_hcd.0/$name", devDir.absolutePath)
+                        KaliInitLog.add("usb-dev", "$name → symlink → vhci_hcd.0/$name")
+                    } catch (t: Throwable) {
+                        Log.w(tag, "device symlink fail ($name): ${t.message}")
+                    }
+                }
+            }
         } catch (t: Throwable) {
-            Log.w(tag, "subsystem symlink batch error: ${t.message}")
+            Log.w(tag, "sysfs symlink batch error: ${t.message}")
         }
 
         // DIAG: pontosan megmutatja, hogy az LKL-ben valóban mi van.
