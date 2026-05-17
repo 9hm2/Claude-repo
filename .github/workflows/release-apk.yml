@@ -24,6 +24,10 @@ on:
   push:
     tags:
       - 'release-*'
+    branches:
+      - 'claude/**'
+    paths:
+      - 'releases/*.apk.aa'
 
 permissions:
   contents: write
@@ -40,10 +44,16 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             APK="${{ inputs.apk_basename }}"
             TAG="${{ inputs.release_tag }}"
-          else
+          elif [[ "${GITHUB_REF}" == refs/tags/release-* ]]; then
             # release-72f326a → kaliterm-debug-72f326a.apk + v72f326a
             SHA="${GITHUB_REF_NAME#release-}"
             APK="kaliterm-debug-${SHA}.apk"
+            TAG="v${SHA}"
+          else
+            # Branch push: auto-detect az aktuális chunk-fájlból
+            AA=$(ls releases/kaliterm-debug-*.apk.aa | head -1)
+            APK=$(basename "$AA" .aa)
+            SHA=$(echo "$APK" | sed -E 's/^kaliterm-debug-([^.]+)\.apk$/\1/')
             TAG="v${SHA}"
           fi
           echo "apk=${APK}" >> "$GITHUB_OUTPUT"
