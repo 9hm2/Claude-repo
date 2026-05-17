@@ -406,7 +406,11 @@ class KaliShellService : Service() {
         val procHit = materializeLklTree(iface, "/proc", procMirror, maxDepth = 4, maxPerDir = 64)
         KaliInitLog.add("shell-svc", "/proc materalizálva: $procHit entry (${System.currentTimeMillis()-tt}ms)")
         tt = System.currentTimeMillis()
-        val sysHit  = materializeLklTree(iface, "/sys",  sysMirror,  maxDepth = 5, maxPerDir = 80)
+        // /sys: maxDepth=6 hogy a USB device-attribútumokat (busnum, devnum,
+        // idVendor, idProduct, manufacturer, …) is beolvassuk. Pl. a path
+        // /sys/bus/usb/devices/usb1/busnum 5 szinten van, /sys/devices/
+        // platform/vhci_hcd.0/usb1/1-1/idVendor pedig 6 szinten.
+        val sysHit  = materializeLklTree(iface, "/sys",  sysMirror,  maxDepth = 6, maxPerDir = 80)
         KaliInitLog.add("shell-svc", "/sys materalizálva: $sysHit entry (${System.currentTimeMillis()-tt}ms)")
         tt = System.currentTimeMillis()
         val devHit  = materializeLklTree(iface, "/dev",  devMirror,  maxDepth = 3, maxPerDir = 64)
@@ -516,7 +520,7 @@ class KaliShellService : Service() {
         maxDepth: Int, maxPerDir: Int,
     ): Int {
         val buf: ByteArray = runCatching {
-            iface.readLklTree(root, maxDepth, 4 * 1024 * 1024, maxPerDir)
+            iface.readLklTree(root, maxDepth, 8 * 1024 * 1024, maxPerDir)
         }.getOrNull() ?: return 0
 
         var pos = 0

@@ -1838,7 +1838,10 @@ static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
 static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
                     int depth, int max_per_dir)
 {
-    if (depth <= 0) return 0;
+    /* BUG-FIX: korábban `if (depth <= 0) return 0;` itt volt → a leaf-fájlok
+     * (pl. /sys/bus/usb/devices/usb1/busnum) NEM lettek beolvasva. A depth
+     * csak a RECURSION-ra vonatkozik (mappákba lemenni); a fájlt akkor is
+     * be kell olvasni, ha depth=0. */
     if (*pos + 256 > cap) return -1;  /* nincs hely a metadatra sem */
     if (now_ms() > g_walk_deadline_ms) {
         LOGW("walk_lkl: deadline expired at %s", path);
@@ -1889,8 +1892,14 @@ static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
         return 0;
     }
 
-    /* Directory — emit + collect children, then recurse */
+    /* Directory — emit + collect children, then recurse.
+     * depth <= 0 esetén: csak az üres directory-bejegyzést emit-eljük,
+     * a tartalmába NEM megyünk le. */
     APPENDF("D\n%s\n", path);
+    if (depth <= 0) {
+        lkl_close(fd);
+        return 0;
+    }
 
     /* Gyűjtsük be a gyermek-neveket */
     char *names[128];
