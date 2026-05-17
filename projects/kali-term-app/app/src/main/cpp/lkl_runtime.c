@@ -74,8 +74,10 @@ typedef long (*fn_lkl_syscall)(long no, long *params);  /* generic dispatcher */
 #define LKL_AT_FDCWD         (-100)
 #define LKL_O_RDONLY         0
 #define LKL_O_WRONLY         1
+#define LKL_O_NONBLOCK       04000
 #define LKL_EBUSY            16
 #define LKL_ENOENT           2
+#define LKL_EAGAIN           11
 
 #define LKL_AF_UNIX           1
 #define LKL_AF_INET           2
@@ -1776,12 +1778,27 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklKillShell(JNIEnv *env, jobject thiz)
 
 static int is_skip_entry(const char *name)
 {
-    /* sysfs symlink-loop, slab-explosion, runtime-PM stb. */
+    /* KRITIKUS: a /proc-ban van NÉHÁNY fájl, ami olvasáskor BLOKKOL
+     * (várja a kernel-event-et, pl. /proc/kmsg). Mivel a walk_lkl
+     * a g_lkl.lock-ot tartja, az egész :lkl process megáll a Binder-
+     * hívásig. Ezeket explicit skipeljük. */
     static const char *skip[] = {
+        /* sysfs symlink-loop, slab-explosion, runtime-PM stb. */
         "subsystem", "driver", "module", "of_node",
         "cwd", "exe", "root", "fd", "fdinfo", "task",
         "slab", "cache", "power", "efi",
         "self", "thread-self",
+        /* /proc blokkoló read-ek (várnak kernel-eventre v. lapozásra) */
+        "kmsg",                /* várja a kernel-üzenetet */
+        "kpagecount", "kpageflags", "kpagecgroup",  /* lapozási scan, lassú */
+        "pagetypeinfo",        /* lassú */
+        "sysrq-trigger",       /* triggers magic-key */
+        "interrupts",          /* read-OK de lassú nagy CPU-szám esetén */
+        /* sysfs lassú scan-jek */
+        "uevent",              /* udev-stílusú dump, sokszor üres marad */
+        "trace_pipe",          /* blokkoló stream */
+        "trace_pipe_raw",
+        "trigger", "trigger0", /* tracing-trigger-ek */
         NULL
     };
     for (int i = 0; skip[i]; i++) {
@@ -1804,6 +1821,17 @@ static int is_skip_entry(const char *name)
     *pos += (size_t)_n;                                                  \
 } while (0)
 
+/* Globális deadline timer a walk_lkl-hez. Hard-limit 5 sec /walk-call,
+ * hogy a UI-thread NE várhassa fél-percig a Binder-választ. */
+static long long g_walk_deadline_ms = 0;
+
+static long long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
                     int depth, int max_per_dir);
 
@@ -1812,8 +1840,15 @@ static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
 {
     if (depth <= 0) return 0;
     if (*pos + 256 > cap) return -1;  /* nincs hely a metadatra sem */
+    if (now_ms() > g_walk_deadline_ms) {
+        LOGW("walk_lkl: deadline expired at %s", path);
+        return -1;
+    }
 
-    long fd = lkl_open(path, LKL_O_RDONLY);
+    /* O_NONBLOCK: a blokkoló /proc fájlok (kmsg, trace_pipe stb. — ha
+     * valami elkerülte az is_skip_entry check-et) EAGAIN-nel visszatérnek
+     * ahelyett hogy a walk-ot befagyasztanák. */
+    long fd = lkl_open(path, LKL_O_RDONLY | LKL_O_NONBLOCK);
     if (fd < 0) {
         /* Nem létezik vagy nincs jogosultság — kihagyjuk. */
         return 0;
@@ -1825,13 +1860,17 @@ static int walk_lkl(const char *path, char *out, size_t *pos, size_t cap,
     long bytes = lkl_call(LKL_NR_getdents64, fd,
                           (long)(intptr_t)dirbuf, (long)sizeof(dirbuf), 0, 0);
     if (bytes < 0) {
-        /* File — beolvassuk a tartalmat (max 64KB-ig). */
+        /* File — beolvassuk a tartalmat (max 64KB-ig).
+         * MAX 8 olvasási iteráció és EAGAIN-re KIESÜNK, hogy egy lassú
+         * vagy nem-poll-elhető fájl ne fogja vissza a walk-ot. */
         char *content = malloc(65536);
         if (!content) { lkl_close(fd); return -1; }
         long total = 0;
-        while (total < 65536) {
+        int iter = 0;
+        while (total < 65536 && iter++ < 16) {
             long r = lkl_read(fd, content + total, 65536 - total);
-            if (r <= 0) break;
+            if (r == -LKL_EAGAIN) break;  /* nem-blokkoló: nincs adat most */
+            if (r <= 0) break;            /* EOF v. hiba */
             total += r;
         }
         lkl_close(fd);
@@ -1912,7 +1951,11 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklReadTree(
     lkl_resolve_locked();
     if (g_lkl.running && g_lkl.syscall_fn) {
         int mpd = (max_per_dir > 0) ? max_per_dir : 64;
+        /* Hard deadline: 5 sec a teljes walk-ra, függetlenül mit talál. */
+        g_walk_deadline_ms = now_ms() + 5000;
+        LOGI("walk_lkl START root=%s depth=%d", root, max_depth);
         walk_lkl(root, out, &pos, cap, max_depth > 0 ? max_depth : 5, mpd);
+        LOGI("walk_lkl END root=%s emitted=%zu bytes", root, pos);
     }
     pthread_mutex_unlock(&g_lkl.lock);
 
