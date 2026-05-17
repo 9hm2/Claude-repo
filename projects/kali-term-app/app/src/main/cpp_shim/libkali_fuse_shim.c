@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>  /* makedev() — libudev replacement */
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/time.h>
@@ -85,18 +86,15 @@ static DIR   *(*r_opendir)(const char *)                 = NULL;
  * be ezt a shim-et. Az opendir/readdir-be valódi host-fd-t kreálunk
  * (memfd_create), hogy a libsystemd `dirfd(d) >= 0` assertion-je elfogadja.
  * Ezzel a libudev a /sys-en valódi LKL-tartalmat lát LIVE-MODE-ban. */
-static int is_lkl_path(const char *path)
-{
-    if (!path) return 0;
-    if (path[0] != '/') return 0;
-    if (strncmp(path, "/sys", 4) == 0 && (path[4] == '/' || path[4] == 0)) return 1;
-    if (strncmp(path, "/proc", 5) == 0 && (path[5] == '/' || path[5] == 0)) return 1;
-    /* /dev: csak a /dev/bus/usb-t route-oljuk LKL-re (USB device file-ok).
-     * A többi /dev (tty, ptmx, null, ...) marad a host devtmpfs-en, mert
-     * azok valódi char-device-ok kellenek hogy legyenek (NEM placeholder). */
-    if (strncmp(path, "/dev/bus", 8) == 0 && (path[8] == '/' || path[8] == 0)) return 1;
-    return 0;
-}
+/* Forward declarations */
+static int is_lkl_path(const char *path);
+static int is_virt_fs_path(const char *p);
+
+/* PHASE 4 — A control-socket-on-keresztüli LKL file-routing-ot KIKAPCSOLVA
+ * tartjuk (régi dirfd-assertion bug). Helyette: a libudev REPLACEMENT (lentebb)
+ * kezeli a /sys/bus/usb enumeráció specifikus problémáját közvetlen libudev-
+ * API-override-okkal. Egyszerűbb és célzottabb mint syscall-szinten harcolni. */
+static int is_lkl_path(const char *path) { (void)path; return 0; }
 
 /* Unix-socket connect. Non-blocking + select(2-sec) — dead server NE fagyasszon
  * be hangin' connectet. A SO_RCVTIMEO/SO_SNDTIMEO csak read/write-ra hat,
@@ -684,3 +682,430 @@ static void shim_init(void)
 {
     SHIM_DBG("[kali-fuse-shim] LD_PRELOAD aktív (sock=%s)\n", SOCK_PATH);
 }
+
+/* ────────────────────────────────────────────────────────────────────
+ *  libudev REPLACEMENT — LKL-CONNECTED VIRTUAL UDEV
+ *
+ *  Indok: a Debian libusb-1.0-0 HAVE_LIBUDEV-vel van build-elve, az
+ *  enumerate-hoz a libudev1.so-t használja. A systemd-szintű libudev
+ *  szigorú belső validációkat (sd-device chase, syspath path-check, ...)
+ *  csinál, amik a chroot+proot+materializált-sysfs környezetben FAIL-elnek
+ *  még akkor is ha a /sys-ben minden adat ott van.
+ *
+ *  A shim LD_PRELOAD-szal FELÜL ÍRJA a libudev publikus API-ját egy
+ *  egyszerű implementációval ami:
+ *   1) udev_enumerate_scan_devices: walk /sys/bus/<subsystem>/devices/
+ *   2) udev_device_new_from_syspath: parse uevent + idVendor/idProduct
+ *   3) Egyszerű getterek a parsed property-kre
+ *
+ *  Forrás-adat: a materializált /sys/bus/usb/devices/* (amit a LKL-ből
+ *  a populateLklProcMirror tölt fel). Tehát ÉRTELMileg az LKL kernel
+ *  adata, csak nem a libudev általi szigorú validáción át.
+ * ──────────────────────────────────────────────────────────────────── */
+
+/* Forward declarations of opaque types — same ABI as upstream libudev */
+struct udev;
+struct udev_enumerate;
+struct udev_list_entry;
+struct udev_device;
+
+/* === udev_list_entry (linked list of c-strings) === */
+struct ku_list_entry {
+    char *name;
+    char *value;
+    struct ku_list_entry *next;
+};
+
+static struct ku_list_entry *ku_list_append(struct ku_list_entry **head, const char *name, const char *value)
+{
+    struct ku_list_entry *e = calloc(1, sizeof(*e));
+    if (!e) return NULL;
+    e->name = name ? strdup(name) : NULL;
+    e->value = value ? strdup(value) : NULL;
+    if (!*head) {
+        *head = e;
+    } else {
+        struct ku_list_entry *p = *head;
+        while (p->next) p = p->next;
+        p->next = e;
+    }
+    return e;
+}
+
+static void ku_list_free(struct ku_list_entry *head)
+{
+    while (head) {
+        struct ku_list_entry *n = head->next;
+        free(head->name);
+        free(head->value);
+        free(head);
+        head = n;
+    }
+}
+
+/* === udev "context" — minimal === */
+struct ku_udev {
+    int refcount;
+};
+
+/* === udev_enumerate === */
+struct ku_enum {
+    int refcount;
+    struct ku_udev *udev;
+    char *match_subsystem;
+    struct ku_list_entry *devices;  /* syspath list */
+};
+
+/* === udev_device — parsed from /sys/<syspath>/uevent + attribute files === */
+struct ku_device {
+    int refcount;
+    struct ku_udev *udev;
+    char *syspath;
+    char *subsystem;
+    char *devnode;
+    char *devtype;
+    char *sysname;
+    dev_t devnum;
+    int initialized;
+    struct ku_list_entry *properties;
+    struct ku_list_entry *sysattrs;
+};
+
+/* === Public API === */
+
+struct udev *udev_new(void)
+{
+    struct ku_udev *u = calloc(1, sizeof(*u));
+    if (!u) return NULL;
+    u->refcount = 1;
+    return (struct udev *)u;
+}
+
+struct udev *udev_ref(struct udev *u)
+{
+    if (u) ((struct ku_udev *)u)->refcount++;
+    return u;
+}
+
+struct udev *udev_unref(struct udev *u)
+{
+    if (!u) return NULL;
+    struct ku_udev *ku = (struct ku_udev *)u;
+    if (--ku->refcount <= 0) free(ku);
+    return NULL;
+}
+
+struct udev_enumerate *udev_enumerate_new(struct udev *u)
+{
+    if (!u) return NULL;
+    struct ku_enum *e = calloc(1, sizeof(*e));
+    if (!e) return NULL;
+    e->refcount = 1;
+    e->udev = (struct ku_udev *)udev_ref(u);
+    return (struct udev_enumerate *)e;
+}
+
+struct udev_enumerate *udev_enumerate_ref(struct udev_enumerate *e)
+{
+    if (e) ((struct ku_enum *)e)->refcount++;
+    return e;
+}
+
+struct udev_enumerate *udev_enumerate_unref(struct udev_enumerate *e)
+{
+    if (!e) return NULL;
+    struct ku_enum *ke = (struct ku_enum *)e;
+    if (--ke->refcount <= 0) {
+        free(ke->match_subsystem);
+        ku_list_free(ke->devices);
+        udev_unref((struct udev *)ke->udev);
+        free(ke);
+    }
+    return NULL;
+}
+
+int udev_enumerate_add_match_subsystem(struct udev_enumerate *e, const char *subsystem)
+{
+    if (!e || !subsystem) return -EINVAL;
+    struct ku_enum *ke = (struct ku_enum *)e;
+    free(ke->match_subsystem);
+    ke->match_subsystem = strdup(subsystem);
+    return 0;
+}
+
+/* /sys/bus/<sub>/devices walk. */
+int udev_enumerate_scan_devices(struct udev_enumerate *e)
+{
+    if (!e) return -EINVAL;
+    struct ku_enum *ke = (struct ku_enum *)e;
+    const char *sub = ke->match_subsystem ? ke->match_subsystem : "usb";
+
+    char dirpath[256];
+    snprintf(dirpath, sizeof(dirpath), "/sys/bus/%s/devices", sub);
+
+    INIT(opendir);
+    DIR *d = r_opendir(dirpath);
+    if (!d) return -errno;
+
+    struct dirent *de;
+    INIT(read);  /* not used, but ensure init */
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        /* Interfészek: 1-0:1.0 stb. Ezeket KIHAGYJUK — libudev is így csinálja
+         * a usb subsystem enumeráció során (csak DEVICE-okat ad, nem interfész-eket). */
+        if (strchr(de->d_name, ':')) continue;
+
+        char syspath[512];
+        snprintf(syspath, sizeof(syspath), "%s/%s", dirpath, de->d_name);
+        ku_list_append(&ke->devices, syspath, NULL);
+    }
+    closedir(d);
+    return 0;
+}
+
+struct udev_list_entry *udev_enumerate_get_list_entry(struct udev_enumerate *e)
+{
+    if (!e) return NULL;
+    return (struct udev_list_entry *)((struct ku_enum *)e)->devices;
+}
+
+const char *udev_list_entry_get_name(struct udev_list_entry *le)
+{
+    if (!le) return NULL;
+    return ((struct ku_list_entry *)le)->name;
+}
+
+const char *udev_list_entry_get_value(struct udev_list_entry *le)
+{
+    if (!le) return NULL;
+    return ((struct ku_list_entry *)le)->value;
+}
+
+struct udev_list_entry *udev_list_entry_get_next(struct udev_list_entry *le)
+{
+    if (!le) return NULL;
+    return (struct udev_list_entry *)((struct ku_list_entry *)le)->next;
+}
+
+struct udev_list_entry *udev_list_entry_get_by_name(struct udev_list_entry *le, const char *name)
+{
+    while (le) {
+        const char *n = udev_list_entry_get_name(le);
+        if (n && strcmp(n, name) == 0) return le;
+        le = udev_list_entry_get_next(le);
+    }
+    return NULL;
+}
+
+/* Parse a uevent file: KEY=VALUE pairs. */
+static void ku_parse_uevent(struct ku_device *d, const char *syspath)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/uevent", syspath);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        size_t l = strlen(line);
+        while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        const char *key = line, *value = eq + 1;
+        ku_list_append(&d->properties, key, value);
+        if (strcmp(key, "DEVNAME") == 0) {
+            free(d->devnode);
+            /* DEVNAME is relative; libudev returns it prefixed by /dev/ */
+            char tmp[256];
+            snprintf(tmp, sizeof(tmp), "/dev/%s", value);
+            d->devnode = strdup(tmp);
+        } else if (strcmp(key, "DEVTYPE") == 0) {
+            free(d->devtype);
+            d->devtype = strdup(value);
+        } else if (strcmp(key, "MAJOR") == 0) {
+            d->devnum |= makedev(atoi(value), 0) & ~0xff;
+        } else if (strcmp(key, "MINOR") == 0) {
+            d->devnum |= atoi(value);
+        }
+    }
+    fclose(f);
+}
+
+/* Read a single-line sysfs attribute (busnum, idVendor, ...). */
+static char *ku_read_sysattr(const char *syspath, const char *name)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", syspath, name);
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    char buf[256];
+    if (!fgets(buf, sizeof(buf), f)) { fclose(f); return NULL; }
+    fclose(f);
+    size_t l = strlen(buf);
+    while (l && (buf[l-1] == '\n' || buf[l-1] == '\r')) buf[--l] = 0;
+    return strdup(buf);
+}
+
+struct udev_device *udev_device_new_from_syspath(struct udev *u, const char *syspath)
+{
+    if (!u || !syspath) return NULL;
+    struct stat st;
+    INIT(stat);
+    if (r_stat(syspath, &st) < 0) return NULL;
+
+    struct ku_device *d = calloc(1, sizeof(*d));
+    if (!d) return NULL;
+    d->refcount = 1;
+    d->udev = (struct ku_udev *)udev_ref(u);
+    d->syspath = strdup(syspath);
+    d->initialized = 1;
+
+    /* sysname = basename(syspath) */
+    const char *base = strrchr(syspath, '/');
+    d->sysname = strdup(base ? base + 1 : syspath);
+
+    /* subsystem from /sys/bus/<X>/devices path */
+    if (strstr(syspath, "/sys/bus/usb/")) d->subsystem = strdup("usb");
+    else if (strstr(syspath, "/sys/bus/hid/")) d->subsystem = strdup("hid");
+    else d->subsystem = strdup("usb"); /* default for our enumerate-usb-only */
+
+    ku_parse_uevent(d, syspath);
+    return (struct udev_device *)d;
+}
+
+struct udev_device *udev_device_ref(struct udev_device *dev)
+{
+    if (dev) ((struct ku_device *)dev)->refcount++;
+    return dev;
+}
+
+struct udev_device *udev_device_unref(struct udev_device *dev)
+{
+    if (!dev) return NULL;
+    struct ku_device *d = (struct ku_device *)dev;
+    if (--d->refcount <= 0) {
+        free(d->syspath);
+        free(d->subsystem);
+        free(d->devnode);
+        free(d->devtype);
+        free(d->sysname);
+        ku_list_free(d->properties);
+        ku_list_free(d->sysattrs);
+        udev_unref((struct udev *)d->udev);
+        free(d);
+    }
+    return NULL;
+}
+
+const char *udev_device_get_syspath(struct udev_device *dev)
+{
+    return dev ? ((struct ku_device *)dev)->syspath : NULL;
+}
+
+const char *udev_device_get_subsystem(struct udev_device *dev)
+{
+    return dev ? ((struct ku_device *)dev)->subsystem : NULL;
+}
+
+const char *udev_device_get_sysname(struct udev_device *dev)
+{
+    return dev ? ((struct ku_device *)dev)->sysname : NULL;
+}
+
+const char *udev_device_get_devnode(struct udev_device *dev)
+{
+    return dev ? ((struct ku_device *)dev)->devnode : NULL;
+}
+
+const char *udev_device_get_devtype(struct udev_device *dev)
+{
+    return dev ? ((struct ku_device *)dev)->devtype : NULL;
+}
+
+dev_t udev_device_get_devnum(struct udev_device *dev)
+{
+    return dev ? ((struct ku_device *)dev)->devnum : 0;
+}
+
+int udev_device_get_is_initialized(struct udev_device *dev)
+{
+    return dev ? ((struct ku_device *)dev)->initialized : 0;
+}
+
+const char *udev_device_get_action(struct udev_device *dev)
+{
+    return "add";  /* enumeráció kontextusban tradicionálisan "add" */
+}
+
+const char *udev_device_get_sysattr_value(struct udev_device *dev, const char *attr)
+{
+    if (!dev || !attr) return NULL;
+    struct ku_device *d = (struct ku_device *)dev;
+    /* Check cache */
+    struct ku_list_entry *e = d->sysattrs;
+    while (e) {
+        if (e->name && strcmp(e->name, attr) == 0) return e->value;
+        e = e->next;
+    }
+    /* Read and cache */
+    char *val = ku_read_sysattr(d->syspath, attr);
+    if (!val) return NULL;
+    ku_list_append(&d->sysattrs, attr, val);
+    free(val);
+    /* Find again in cache (just appended) */
+    e = d->sysattrs;
+    while (e) {
+        if (e->name && strcmp(e->name, attr) == 0) return e->value;
+        e = e->next;
+    }
+    return NULL;
+}
+
+const char *udev_device_get_property_value(struct udev_device *dev, const char *key)
+{
+    if (!dev || !key) return NULL;
+    struct ku_list_entry *e = ((struct ku_device *)dev)->properties;
+    while (e) {
+        if (e->name && strcmp(e->name, key) == 0) return e->value;
+        e = e->next;
+    }
+    return NULL;
+}
+
+struct udev_list_entry *udev_device_get_properties_list_entry(struct udev_device *dev)
+{
+    return dev ? (struct udev_list_entry *)((struct ku_device *)dev)->properties : NULL;
+}
+
+/* Hierarchical parent — for libusb we just return NULL (no parent traversal). */
+struct udev_device *udev_device_get_parent(struct udev_device *dev) { return NULL; }
+struct udev_device *udev_device_get_parent_with_subsystem_devtype(struct udev_device *dev, const char *s, const char *t) { return NULL; }
+
+/* Monitor — fake (we don't deliver events). Returns same socketpair fd as we
+ * already do for AF_NETLINK in the socket() override above. */
+struct udev_monitor;
+struct udev_monitor *udev_monitor_new_from_netlink(struct udev *u, const char *source)
+{
+    /* Allocate a dummy handle. The libusb thread polls fd from get_fd. */
+    struct ku_udev *m = calloc(1, sizeof(*m));
+    if (!m) return NULL;
+    m->refcount = 1;
+    return (struct udev_monitor *)m;
+}
+struct udev_monitor *udev_monitor_ref(struct udev_monitor *m) { if (m) ((struct ku_udev*)m)->refcount++; return m; }
+struct udev_monitor *udev_monitor_unref(struct udev_monitor *m) {
+    if (!m) return NULL;
+    struct ku_udev *km = (struct ku_udev *)m;
+    if (--km->refcount <= 0) free(km);
+    return NULL;
+}
+int udev_monitor_filter_add_match_subsystem_devtype(struct udev_monitor *m, const char *s, const char *t) { return 0; }
+int udev_monitor_enable_receiving(struct udev_monitor *m) { return 0; }
+int udev_monitor_get_fd(struct udev_monitor *m)
+{
+    /* Return a never-ready fd: socketpair-szal egy peer, ami sosem küld adatot. */
+    int sp[2];
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) < 0) return -1;
+    return sp[0];
+}
+struct udev_device *udev_monitor_receive_device(struct udev_monitor *m) { return NULL; /* never */ }
