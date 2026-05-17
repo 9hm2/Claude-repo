@@ -79,16 +79,22 @@ static DIR   *(*r_opendir)(const char *)                 = NULL;
  * /dev/bus: NE LKL-route! Az LKL devtmpfs-en NINCS /dev/bus/usb (udev kreálná
  * a host-Linuxon). A user-mode mirror-megközelítés szolgáltatja a placeholder-
  * fát; a shim ne menjen LKL-be — fel-bukna ENOENT-en. */
-/* PHASE 4 — A file-op route-olást KIKAPCSOLTUK. A /proc /sys /dev fa most
- * Binder-bulk-readtree-vel valódi diszk-fájlokká van materalizálva, és
- * a proot bind-mountolja → minden libc-syscall valódi fd-vel megy. Nincs
- * dirfd-assertion-bug (libsystemd `dir_fd >= 0` failed), nincs shim-hang.
- *
- * Csak a socket()/bind()/setsockopt() netlink-fake marad aktív, hogy a
- * libusb libudev-init ne fail-eljen -99-cel. Lásd lentebb. */
+/* PHASE-B-hijack-extension: a file-op route-olást VISSZAKAPCSOLOM.
+ * Cél: minden /sys, /proc, /dev syscallt LKL-kernelre küldünk a control-
+ * socketen át. A bash a :lkl-gyermek, fork+execve+LD_PRELOAD-on át tölti
+ * be ezt a shim-et. Az opendir/readdir-be valódi host-fd-t kreálunk
+ * (memfd_create), hogy a libsystemd `dirfd(d) >= 0` assertion-je elfogadja.
+ * Ezzel a libudev a /sys-en valódi LKL-tartalmat lát LIVE-MODE-ban. */
 static int is_lkl_path(const char *path)
 {
-    (void)path;
+    if (!path) return 0;
+    if (path[0] != '/') return 0;
+    if (strncmp(path, "/sys", 4) == 0 && (path[4] == '/' || path[4] == 0)) return 1;
+    if (strncmp(path, "/proc", 5) == 0 && (path[5] == '/' || path[5] == 0)) return 1;
+    /* /dev: csak a /dev/bus/usb-t route-oljuk LKL-re (USB device file-ok).
+     * A többi /dev (tty, ptmx, null, ...) marad a host devtmpfs-en, mert
+     * azok valódi char-device-ok kellenek hogy legyenek (NEM placeholder). */
+    if (strncmp(path, "/dev/bus", 8) == 0 && (path[8] == '/' || path[8] == 0)) return 1;
     return 0;
 }
 

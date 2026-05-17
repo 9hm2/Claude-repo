@@ -373,6 +373,10 @@ set -- "${'$'}@" \
         TMPDIR=/tmp \
         LANG=C.UTF-8 \
         LIBUSB_DISABLE_UDEV=1 \
+        SYSTEMD_LOG_LEVEL=debug \
+        UDEV_LOG=debug \
+        LIBUDEV_LOG_PRIORITY=debug \
+        SYSTEMD_DEVICE_VERIFY_SYSFS=0 \
         LD_PRELOAD=/usr/lib/libkali_fuse_shim.so \
         /bin/bash --login
 exec "${'$'}@"
