@@ -215,6 +215,8 @@ if [[ -f "${KERNEL_BUILD_DIR}/modules.builtin" ]]; then
     else
         echo "[kali] WARN: rtl8xxxu HIÁNYZIK a modules.builtin-ből!"
     fi
+    # System.map a depmod után törölhető (3.4MB, csak build-time kell)
+    ${SUDO} rm -f "${MODDIR}/System.map"
     if [[ -f "${MODDIR}/modules.builtin.alias.bin" ]]; then
         BAS=$(stat -c%s "${MODDIR}/modules.builtin.alias.bin")
         echo "[kali] verifikáció: ✓ modules.builtin.alias.bin (${BAS} byte)"
