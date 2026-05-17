@@ -28,6 +28,7 @@ on:
       - 'claude/**'
     paths:
       - 'releases/*.apk.aa'
+      - '.github/workflows/release-apk.yml'
 
 permissions:
   contents: write
