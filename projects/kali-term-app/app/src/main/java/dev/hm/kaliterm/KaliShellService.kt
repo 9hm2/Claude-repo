@@ -173,17 +173,28 @@ class KaliShellService : Service() {
             // SENTINEL-LIST (mindegyik kötelező a cache-hit-hez):
             //  - usb1/busnum: alap walk_lkl leaf-fix (commit 2de3a10+)
             //  - usb1/uevent: libudev-discovery fix (commit cd47bdc+)
-            // Ha bármelyik hiányzik / üres, az APK frissebb mint a materialize.
+            //  - usb1/subsystem: SYMLINK libudev-subsystem-match fix (current commit)
+            // Ha bármelyik hiányzik / üres / nem-symlink (subsystem), az APK
+            // frissebb mint a materialize → kötelező re-populate.
             if (lklProcOsrelease != null) {
-                val sUsbBusnum = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
-                val sUevent   = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/uevent")
+                val sUsbBusnum  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
+                val sUevent     = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/uevent")
+                val sSubsystem  = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/subsystem")
+                val ssIsLink    = try {
+                    java.nio.file.Files.isSymbolicLink(sSubsystem.toPath())
+                } catch (_: Throwable) { false }
                 val ok = sUsbBusnum.exists() && sUsbBusnum.length() > 0
                       && sUevent.exists()   && sUevent.length()   > 0
+                      && ssIsLink
                 if (ok) {
-                    KaliInitLog.add("shell-svc", "prepareLklMirror skip — cache OK (busnum+uevent megvan)")
+                    KaliInitLog.add("shell-svc", "prepareLklMirror skip — cache OK (busnum+uevent+subsystem-link)")
                     return
                 } else {
-                    val why = if (!sUevent.exists() || sUevent.length() == 0L) "uevent hiány" else "busnum hiány"
+                    val why = when {
+                        !sSubsystem.exists() || !ssIsLink -> "subsystem nem symlink"
+                        !sUevent.exists() || sUevent.length() == 0L -> "uevent hiány"
+                        else -> "busnum hiány"
+                    }
                     KaliInitLog.add("shell-svc", "cache invalid ($why) — RE-POPULATE (frissebb APK?)")
                     lklProcOsrelease = null
                 }
@@ -443,6 +454,33 @@ class KaliShellService : Service() {
                "class/net", "class/input", "class/block",
                "devices/virtual").forEach {
             File(sysMirror, it).mkdirs()
+        }
+
+        // libudev device discovery: minden /sys/bus/usb/devices/<X> entry-ben
+        // KÖTELEZŐ a "subsystem" symlink — a libudev ezt használja az
+        // udev_enumerate_add_match_subsystem("usb") filterhez. Hiányában a
+        // device NEM kerül be a match-list-be, és lsusb 0 device-t ad.
+        //
+        // A symlink target a /sys/bus/usb-ra mutat. Sysfs konvenció szerint
+        // relatív path-szal, hogy proot-bind-mount sem zavarja meg.
+        try {
+            val usbDevicesDir = File(sysMirror, "bus/usb/devices")
+            usbDevicesDir.listFiles()?.forEach { devDir ->
+                if (!devDir.isDirectory) return@forEach
+                val ssLink = File(devDir, "subsystem")
+                if (!ssLink.exists()) {
+                    // /sys/bus/usb/devices/<X>/subsystem → ../../../../bus/usb
+                    // (4 szint visszafelé: <X> → devices → usb → bus → /sys gyökér)
+                    try {
+                        Os.symlink("../../../../bus/usb", ssLink.absolutePath)
+                    } catch (t: Throwable) {
+                        Log.w(tag, "subsystem symlink fail (${devDir.name}): ${t.message}")
+                    }
+                }
+            }
+            KaliInitLog.add("usb-dev", "subsystem symlinks kreálva /sys/bus/usb/devices/*/")
+        } catch (t: Throwable) {
+            Log.w(tag, "subsystem symlink batch error: ${t.message}")
         }
 
         // DIAG: pontosan megmutatja, hogy az LKL-ben valóban mi van.
