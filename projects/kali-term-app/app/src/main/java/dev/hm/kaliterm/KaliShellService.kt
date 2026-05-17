@@ -94,17 +94,42 @@ class KaliShellService : Service() {
                 "LANG=C.UTF-8",
                 "PATH=/system/bin:/system/xbin",
             )
-            Log.i(tag, "TerminalSession létrehozása: launch=${rootfs.launchSh.absolutePath}")
-            // KÖZVETLENÜL a launch.sh-t indítjuk shell-ként; a `#!/system/bin/sh`
-            // shebang a kernelnek tudtul adja hogy sh-val futassa. Korábban
-            // `shellPath=sh, args=[launch.sh]`-szel hívtunk, de az argv[0]-t
-            // a launch.sh-ra állította, és sh interactive módban indult
-            // ahelyett hogy a scriptet futtatta volna.
+            Log.i(tag, "TerminalSession létrehozása (PHASE 3: shell a :lkl-ben)")
+            // PHASE 3 arch-refaktor: a proot+bash NEM a main process-ben
+            // forkolódik (Termux TerminalSession.JNI.createSubprocess), hanem
+            // a `:lkl` process-ben. Ennek köszönhetően a Samsung BBA / OOM-
+            // killer a main process kilövésekor a shell-t NEM öli vele
+            // együtt — a `:lkl` foreground notification mind a kernelt
+            // mind a shell-t együtt védi.
+            val iface = lklIface
+                ?: throw IllegalStateException("LklService nem bind-elt — populateLklProcMirror nem futott le?")
+
+            // Először nézzük meg, van-e már futó shell (reconnect-flow).
+            var pfd: android.os.ParcelFileDescriptor? = runCatching {
+                iface.getCurrentShell()
+            }.getOrNull()
+            var shellPid = runCatching { iface.getCurrentShellPid() }.getOrDefault(0)
+
+            if (pfd == null) {
+                Log.i(tag, "új shell spawnolása a :lkl process-ben")
+                pfd = iface.startKaliShell(
+                    /* shellPath = */ rootfs.launchSh.absolutePath,
+                    /* cwd       = */ rootfs.bundleDir.absolutePath,
+                    /* args      = */ arrayOf(rootfs.launchSh.absolutePath),
+                    /* env       = */ env,
+                    /* cols      = */ 80,
+                    /* rows      = */ 24,
+                ) ?: throw IllegalStateException("startKaliShell visszatért null-lal — :lkl forkpty fail")
+                shellPid = iface.getCurrentShellPid()
+                Log.i(tag, "shell spawn OK: pid=$shellPid (:lkl-ben), PTY-fd dup-olva main-be")
+            } else {
+                Log.i(tag, "reconnect a meglévő :lkl-shell-hez: pid=$shellPid")
+            }
+
+            val masterFd = pfd.detachFd()  // PFD ownership-transfer a TerminalSession-höz
             val s = TerminalSession(
-                /* shellPath      = */ rootfs.launchSh.absolutePath,
-                /* cwd            = */ rootfs.bundleDir.absolutePath,
-                /* args           = */ arrayOf(rootfs.launchSh.absolutePath),
-                /* env            = */ env,
+                /* externalPtyFd  = */ masterFd,
+                /* externalPid    = */ shellPid,
                 /* transcriptRows = */ 5000,
                 /* client         = */ dispatcher,
             )
@@ -514,7 +539,7 @@ class KaliShellService : Service() {
     }
 
     override fun onDestroy() {
-        Log.i(tag, "onDestroy — session terminate")
+        Log.i(tag, "onDestroy — PHASE3: shell a :lkl-ben él tovább, NEM killing")
         // KRITIKUS leak-fix: a populateLklProcMirror által bindelt lklConn-t
         // unbind-elni KELL itt, különben ServiceConnectionLeaked exception
         // a logcat-ban + Android tracking-resource holding.
@@ -524,7 +549,11 @@ class KaliShellService : Service() {
             }
             lklIface = null
         }
-        try { session?.finishIfRunning() } catch (_: Throwable) {}
+        // PHASE 3: a shell (bash) NEM ebben a process-ben fut, hanem :lkl-ben.
+        // A finishIfRunning() Os.kill(mShellPid)-ot hív, ami egy másik process
+        // gyermekére EPERM-mel failel — ártalmatlan. A PTY master fd duplikátum-
+        // ját itt a kernel autom. zárja a process-halálban. Az igazi shell
+        // tovább él a `:lkl`-ben, és a new-main reconnect-helhet rá.
         session = null
         super.onDestroy()
     }

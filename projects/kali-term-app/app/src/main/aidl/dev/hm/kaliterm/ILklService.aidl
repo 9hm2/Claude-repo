@@ -56,4 +56,32 @@ interface ILklService {
      *  ide az LKL FS valódi (élő) eléréséhez. Idempotens.
      *  @return 0 ha OK, negatív errno hiba esetén */
     int startLklControlSocket(String path);
+
+    /**
+     * Phase 3 — proot+bash spawn a `:lkl` process-ben. forkpty + execve.
+     * A `:lkl` megtartja a PTY-master fd-t (process-state); a hívó (main)
+     * a ParcelFileDescriptor-on át dup-ot kap. Ha main meghal Samsung-BBA
+     * miatt, a shell tovább él, és a new main re-kötheti.
+     *
+     * Idempotens: ha már van futó shell, a meglévő master fd-t adja vissza
+     * (új PFD dup-ja).
+     *
+     * @return PFD a PTY master fd-vel, vagy null hiba esetén.
+     */
+    ParcelFileDescriptor startKaliShell(String shellPath, String cwd,
+                                        in String[] args, in String[] env,
+                                        int cols, int rows);
+
+    /** Az aktuális (cached) PTY master fd új PFD-dup-ja, vagy null ha nincs
+     *  futó shell. A new-main használja reconnect-re a meglévő bash-hez. */
+    ParcelFileDescriptor getCurrentShell();
+
+    /** PID-je az aktuálisan futó shell-nek (`:lkl` scope-ban), 0 ha nincs. */
+    int getCurrentShellPid();
+
+    /** PTY window-size resize. A child SIGWINCH-et kap. */
+    void resizeShell(int cols, int rows);
+
+    /** Aktuális shell megölése + master fd close. A reconnect-fa törlődik. */
+    int killShell();
 }

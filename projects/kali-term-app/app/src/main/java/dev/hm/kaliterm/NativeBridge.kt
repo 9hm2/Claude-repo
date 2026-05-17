@@ -135,4 +135,33 @@ object NativeBridge {
     external fun nativeLklAttachUsbDevice(
         fd: Int, vid: Int, pid: Int, busnum: Int, devnum: Int,
     ): String
+
+    /* ── Phase 3 — shell host a :lkl process-ben ────────────────────── */
+
+    /**
+     * forkpty + execve a `:lkl` process-ben. A child execve-li a shellPath-t
+     * a megadott args+env-vel. A parent (`:lkl`) megtartja a PTY master fd-t,
+     * amit visszaad; a hívó (LklService) PFD-vel duplikálja a main-be.
+     *
+     * Idempotens — ha már van futó shell, a meglévő fd-t adja vissza
+     * (nem indít újat). Megnyitva tartja a fd-t close-on-exec-szel.
+     *
+     * @return PTY master fd a `:lkl` process scope-jában, vagy negatív errno.
+     */
+    external fun nativeLklSpawnShell(
+        shellPath: String, cwd: String, args: Array<String>, env: Array<String>,
+        cols: Int, rows: Int,
+    ): Int
+
+    /** A cached shell PTY master fd-je (`:lkl` scope); -1 ha nincs aktív shell. */
+    external fun nativeLklGetShellFd(): Int
+
+    /** A cached shell pid-je (`:lkl` scope); 0 ha nincs. */
+    external fun nativeLklGetShellPid(): Int
+
+    /** PTY window-size resize a master fd-n (a child SIGWINCH-et kap). */
+    external fun nativeLklSetShellSize(cols: Int, rows: Int)
+
+    /** Aktuálisan futó shell-t SIGTERM-mel megöli + master fd close. */
+    external fun nativeLklKillShell(): Int
 }

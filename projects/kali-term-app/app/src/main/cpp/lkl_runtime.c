@@ -31,16 +31,21 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
+#include <pty.h>         /* forkpty — :lkl-process shell-host */
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <libusb.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
+#include <termios.h>
 
 #define LOG_TAG "kaliterm-lkl"
 #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, fmt, ##__VA_ARGS__)
@@ -1560,4 +1565,194 @@ Java_dev_hm_kaliterm_NativeBridge_nativeLklAttachUsbDevice(JNIEnv *env, jobject 
 
     #undef APPEND
     return (*env)->NewStringUTF(env, out);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  Phase 3 — proot+bash spawn a :lkl process-ben.
+ *
+ *  Arch-refaktor indok: a Samsung BBA (és általában minden agresszív
+ *  Android task-killer) UID-szintű kill-t végez, ezért a main process
+ *  halálával a vele futó TerminalSession (bash) is meghal — még akkor
+ *  is ha a `:lkl` foreground notification-nel él. Megoldás: a bash
+ *  futtatása költözzön a `:lkl` process-be, így a `:lkl` foreground
+ *  notification mind a kernel-t mind a shell-t együtt védi.
+ *
+ *  Flow:
+ *    1) main hívja: iface.startKaliShell(shellPath, cwd, args, env, cols, rows)
+ *    2) AIDL átviszi a `:lkl` process-be, ami `forkpty()`-vel létrehoz
+ *       egy PTY-pair-t. A child execve(shellPath, args, env) → launch.sh
+ *       → proot → bash. A parent (`:lkl`) megtartja a master fd-t.
+ *    3) A Binder válasz visszaviszi a master fd-t main-re ParcelFileDescriptor-
+ *       szel (Binder kernel-szinten dup-ol). Main-on a TerminalSession
+ *       attach-eli ezt a fd-t (external-pty mode).
+ *    4) Ha main meghal Samsung-BBA miatt, a `:lkl` és benne a bash él
+ *       tovább. Új main spawn-jakor a TerminalSession ismét csatolható
+ *       a meglévő fd-re (`nativeLklGetShellFd`).
+ * ──────────────────────────────────────────────────────────────────── */
+
+static struct {
+    int master_fd;     /* -1 ha nincs aktív shell */
+    pid_t pid;         /* a forkpty child pid-je */
+    pthread_mutex_t lock;
+} g_shell = { -1, 0, PTHREAD_MUTEX_INITIALIZER };
+
+/* Helper — Java String → C string (caller frees). */
+static char *jstr_dup(JNIEnv *env, jstring js)
+{
+    if (!js) return NULL;
+    const char *s = (*env)->GetStringUTFChars(env, js, NULL);
+    char *d = s ? strdup(s) : NULL;
+    if (s) (*env)->ReleaseStringUTFChars(env, js, s);
+    return d;
+}
+
+/* Helper — Java String[] → char** NULL-terminated (caller frees with free_argv). */
+static char **jstr_array_dup(JNIEnv *env, jobjectArray jarr)
+{
+    if (!jarr) {
+        char **a = calloc(1, sizeof(char *));
+        return a;
+    }
+    jsize n = (*env)->GetArrayLength(env, jarr);
+    char **a = calloc((size_t)n + 1, sizeof(char *));
+    if (!a) return NULL;
+    for (jsize i = 0; i < n; i++) {
+        jstring s = (jstring)(*env)->GetObjectArrayElement(env, jarr, i);
+        a[i] = jstr_dup(env, s);
+        if (s) (*env)->DeleteLocalRef(env, s);
+    }
+    return a;
+}
+
+static void free_argv(char **a)
+{
+    if (!a) return;
+    for (size_t i = 0; a[i]; i++) free(a[i]);
+    free(a);
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklSpawnShell(
+    JNIEnv *env, jobject thiz,
+    jstring jshellPath, jstring jcwd, jobjectArray jargs, jobjectArray jenv,
+    jint cols, jint rows)
+{
+    pthread_mutex_lock(&g_shell.lock);
+    if (g_shell.master_fd > 0) {
+        /* már van futó shell — idempotens: a meglévő master_fd-t adjuk vissza
+         * (a hívó dup-olja PFD-vel a saját process-ébe). */
+        int fd = g_shell.master_fd;
+        pthread_mutex_unlock(&g_shell.lock);
+        LOGI("nativeLklSpawnShell: már van shell (pid=%d), reusing fd=%d", g_shell.pid, fd);
+        return fd;
+    }
+    pthread_mutex_unlock(&g_shell.lock);
+
+    char *shell_path = jstr_dup(env, jshellPath);
+    char *cwd = jstr_dup(env, jcwd);
+    char **args = jstr_array_dup(env, jargs);
+    char **envp = jstr_array_dup(env, jenv);
+
+    if (!shell_path || !args || !envp) {
+        free(shell_path); free(cwd); free_argv(args); free_argv(envp);
+        return -ENOMEM;
+    }
+
+    struct winsize ws = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols,
+                          .ws_xpixel = 0, .ws_ypixel = 0 };
+    struct termios tio;
+    memset(&tio, 0, sizeof(tio));
+    tio.c_iflag = ICRNL | IXON;
+    tio.c_oflag = OPOST | ONLCR;
+    tio.c_cflag = CS8 | CREAD;
+    tio.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | ECHOCTL | ECHOKE;
+    cfsetispeed(&tio, B38400);
+    cfsetospeed(&tio, B38400);
+
+    int master_fd = -1;
+    pid_t pid = forkpty(&master_fd, NULL, &tio, &ws);
+    if (pid < 0) {
+        int e = errno;
+        LOGE("forkpty failed: %s", strerror(e));
+        free(shell_path); free(cwd); free_argv(args); free_argv(envp);
+        return -e;
+    }
+
+    if (pid == 0) {
+        /* CHILD — execve into shellPath */
+        if (cwd && cwd[0]) {
+            if (chdir(cwd) != 0) {
+                fprintf(stderr, "[lkl-shell-child] chdir(%s) failed: %s\n", cwd, strerror(errno));
+            }
+        }
+        execve(shell_path, args, envp);
+        /* execve csak hiba esetén tér vissza */
+        fprintf(stderr, "[lkl-shell-child] execve(%s) failed: %s\n", shell_path, strerror(errno));
+        _exit(127);
+    }
+
+    /* PARENT — szülő :lkl process */
+    free(shell_path); free(cwd); free_argv(args); free_argv(envp);
+
+    /* close-on-exec, hogy a master fd ne lyukadjon ki ha későbbi
+     * forkpty-k lennének. */
+    int flags = fcntl(master_fd, F_GETFD);
+    if (flags >= 0) fcntl(master_fd, F_SETFD, flags | FD_CLOEXEC);
+
+    pthread_mutex_lock(&g_shell.lock);
+    g_shell.master_fd = master_fd;
+    g_shell.pid = pid;
+    pthread_mutex_unlock(&g_shell.lock);
+
+    LOGI("nativeLklSpawnShell OK: pid=%d, master_fd=%d, %dx%d", pid, master_fd, cols, rows);
+    return master_fd;
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklGetShellFd(JNIEnv *env, jobject thiz)
+{
+    pthread_mutex_lock(&g_shell.lock);
+    int fd = g_shell.master_fd;
+    pthread_mutex_unlock(&g_shell.lock);
+    return fd;
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklGetShellPid(JNIEnv *env, jobject thiz)
+{
+    pthread_mutex_lock(&g_shell.lock);
+    int pid = (int)g_shell.pid;
+    pthread_mutex_unlock(&g_shell.lock);
+    return pid;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklSetShellSize(
+    JNIEnv *env, jobject thiz, jint cols, jint rows)
+{
+    pthread_mutex_lock(&g_shell.lock);
+    int fd = g_shell.master_fd;
+    pthread_mutex_unlock(&g_shell.lock);
+    if (fd <= 0) return;
+    struct winsize ws = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols, 0, 0 };
+    ioctl(fd, TIOCSWINSZ, &ws);
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_hm_kaliterm_NativeBridge_nativeLklKillShell(JNIEnv *env, jobject thiz)
+{
+    pthread_mutex_lock(&g_shell.lock);
+    int fd = g_shell.master_fd;
+    pid_t pid = g_shell.pid;
+    g_shell.master_fd = -1;
+    g_shell.pid = 0;
+    pthread_mutex_unlock(&g_shell.lock);
+
+    if (pid > 0) {
+        kill(pid, SIGTERM);
+        /* nem várjuk meg — SIGCHLD reaper kell, de :lkl process death
+         * mindenképp megöli a zombie-t. */
+    }
+    if (fd > 0) close(fd);
+    return 0;
 }

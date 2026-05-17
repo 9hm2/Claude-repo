@@ -173,6 +173,52 @@ class LklService : Service() {
                 Log.e(tag, "startLklControlSocket($path) hiba", t)
                 -1
             }
+
+        /* ── Phase 3 — proot+bash a :lkl process-ben ─────────────────── */
+
+        override fun startKaliShell(
+            shellPath: String, cwd: String,
+            args: Array<String>, env: Array<String>,
+            cols: Int, rows: Int,
+        ): ParcelFileDescriptor? {
+            return try {
+                val fd = NativeBridge.nativeLklSpawnShell(shellPath, cwd, args, env, cols, rows)
+                if (fd <= 0) {
+                    Log.w(tag, "nativeLklSpawnShell rc=$fd")
+                    null
+                } else {
+                    // ParcelFileDescriptor.fromFd dup-ot csinál, így a Binder
+                    // kerneloldalon át tudja küldeni a túloldalra. A :lkl
+                    // megtartja az eredeti fd-t.
+                    ParcelFileDescriptor.fromFd(fd)
+                }
+            } catch (t: Throwable) {
+                Log.e(tag, "startKaliShell hiba", t)
+                null
+            }
+        }
+
+        override fun getCurrentShell(): ParcelFileDescriptor? {
+            return try {
+                val fd = NativeBridge.nativeLklGetShellFd()
+                if (fd <= 0) null else ParcelFileDescriptor.fromFd(fd)
+            } catch (t: Throwable) {
+                Log.e(tag, "getCurrentShell hiba", t)
+                null
+            }
+        }
+
+        override fun getCurrentShellPid(): Int =
+            try { NativeBridge.nativeLklGetShellPid() } catch (t: Throwable) { 0 }
+
+        override fun resizeShell(cols: Int, rows: Int) {
+            try { NativeBridge.nativeLklSetShellSize(cols, rows) }
+            catch (t: Throwable) { Log.w(tag, "resizeShell hiba: ${t.message}") }
+        }
+
+        override fun killShell(): Int =
+            try { NativeBridge.nativeLklKillShell() }
+            catch (t: Throwable) { Log.e(tag, "killShell hiba", t); -1 }
     }
 
     override fun onCreate() {

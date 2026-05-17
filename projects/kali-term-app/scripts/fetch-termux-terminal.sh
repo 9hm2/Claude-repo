@@ -152,6 +152,155 @@ p.write_text(src.replace(needle, patch, 1))
 EOF
 fi
 
+# Patch: TerminalSession external-pty-fd support — Phase 3 arch-refaktor.
+# A Termux upstream TerminalSession `final` (nem subclass-elhető), és
+# `JNI.createSubprocess` mindig forkol a Service process-ében. Phase 3-ban
+# a bash a `:lkl` process-ben fut, a main csak a PTY master fd-t kapja
+# Binder/PFD-n át. Ezért alternate-ctor-t adunk a TerminalSession-höz, ami
+# fork helyett a pre-existing fd-t használja, és waitFor-szálat sem indít.
+TS_JAVA="${PROJ_DIR}/terminal-emulator/src/main/java/com/termux/terminal/TerminalSession.java"
+if ! grep -q "mExternalPtyFd" "${TS_JAVA}"; then
+    echo "[termux] patch TerminalSession — Phase 3 external-pty-fd support"
+    python3 - "${TS_JAVA}" <<'EOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+src = p.read_text()
+
+# 1) final eltávolítása az osztálydeklarációból
+src = src.replace(
+    "public final class TerminalSession extends TerminalOutput {",
+    "public class TerminalSession extends TerminalOutput {",
+    1,
+)
+
+# 2) mTerminalFileDescriptor láthatósága private → package-private
+src = src.replace(
+    "    private int mTerminalFileDescriptor;",
+    "    int mTerminalFileDescriptor;",
+    1,
+)
+
+# 3) Alternate ctor + external-pty-fd field-ek a meglévő ctor UTÁN
+old_ctor = (
+    "    public TerminalSession(String shellPath, String cwd, String[] args, String[] env, Integer transcriptRows, TerminalSessionClient client) {\n"
+    "        this.mShellPath = shellPath;\n"
+    "        this.mCwd = cwd;\n"
+    "        this.mArgs = args;\n"
+    "        this.mEnv = env;\n"
+    "        this.mTranscriptRows = transcriptRows;\n"
+    "        this.mClient = client;\n"
+    "    }"
+)
+new_ctor = old_ctor + "\n\n" + (
+    "    /** External PTY master fd (Phase 3); 0 = a default forkpty path. */\n"
+    "    private int mExternalPtyFd = 0;\n"
+    "    private int mExternalPid = 0;\n"
+    "\n"
+    "    /** Alternate ctor: wrap a pre-existing PTY master fd (no fork in this process).\n"
+    "     *  The shell process lives elsewhere (e.g. `:lkl` process). */\n"
+    "    public TerminalSession(int externalPtyFd, int externalPid, Integer transcriptRows, TerminalSessionClient client) {\n"
+    "        this.mShellPath = \"(external)\";\n"
+    "        this.mCwd = \"\";\n"
+    "        this.mArgs = new String[0];\n"
+    "        this.mEnv = new String[0];\n"
+    "        this.mTranscriptRows = transcriptRows;\n"
+    "        this.mClient = client;\n"
+    "        this.mExternalPtyFd = externalPtyFd;\n"
+    "        this.mExternalPid = externalPid;\n"
+    "    }"
+)
+if old_ctor not in src:
+    sys.exit("TerminalSession patch anchor (orig ctor) nincs meg")
+src = src.replace(old_ctor, new_ctor, 1)
+
+# 4) initializeEmulator: external módban fork helyett a pre-made fd-t
+old_init = (
+    "        int[] processId = new int[1];\n"
+    "        mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns);\n"
+    "        mShellPid = processId[0];"
+)
+new_init = (
+    "        int[] processId = new int[1];\n"
+    "        if (mExternalPtyFd > 0) {\n"
+    "            mTerminalFileDescriptor = mExternalPtyFd;\n"
+    "            mShellPid = mExternalPid;\n"
+    "            JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns);\n"
+    "        } else {\n"
+    "            mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns);\n"
+    "            mShellPid = processId[0];\n"
+    "        }"
+)
+if old_init not in src:
+    sys.exit("TerminalSession patch anchor (initializeEmulator) nincs meg")
+src = src.replace(old_init, new_init, 1)
+
+# 5) Reader thread EOF-on poszt MSG_PROCESS_EXITED-et external módban
+old_reader = (
+    "                    while (true) {\n"
+    "                        int read = termIn.read(buffer);\n"
+    "                        if (read == -1) return;\n"
+    "                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;\n"
+    "                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);\n"
+    "                    }"
+)
+new_reader = (
+    "                    while (true) {\n"
+    "                        int read = termIn.read(buffer);\n"
+    "                        if (read == -1) {\n"
+    "                            if (mExternalPtyFd > 0) {\n"
+    "                                mMainThreadHandler.sendMessage(mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, 0));\n"
+    "                            }\n"
+    "                            return;\n"
+    "                        }\n"
+    "                        if (!mProcessToTerminalIOQueue.write(buffer, 0, read)) return;\n"
+    "                        mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);\n"
+    "                    }"
+)
+if old_reader not in src:
+    sys.exit("TerminalSession patch anchor (reader EOF) nincs meg")
+src = src.replace(old_reader, new_reader, 1)
+
+# 6) Waiter thread NE induljon external módban (nincs waitpid-elhető pid)
+old_waiter = (
+    "        new Thread(\"TermSessionWaiter[pid=\" + mShellPid + \"]\") {\n"
+    "            @Override\n"
+    "            public void run() {\n"
+    "                int processExitCode = JNI.waitFor(mShellPid);\n"
+    "                mMainThreadHandler.sendMessage(mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, processExitCode));\n"
+    "            }\n"
+    "        }.start();\n"
+    "\n"
+    "    }"
+)
+new_waiter = (
+    "        if (mExternalPtyFd == 0) {\n"
+    "            new Thread(\"TermSessionWaiter[pid=\" + mShellPid + \"]\") {\n"
+    "                @Override\n"
+    "                public void run() {\n"
+    "                    int processExitCode = JNI.waitFor(mShellPid);\n"
+    "                    mMainThreadHandler.sendMessage(mMainThreadHandler.obtainMessage(MSG_PROCESS_EXITED, processExitCode));\n"
+    "                }\n"
+    "            }.start();\n"
+    "        }\n"
+    "    }"
+)
+if old_waiter not in src:
+    sys.exit("TerminalSession patch anchor (waiter thread) nincs meg")
+src = src.replace(old_waiter, new_waiter, 1)
+
+# 7) write() external módban is engedélyezett (mShellPid lehet 0 ha :lkl
+#    nem updateelte még, ezért az mExternalPtyFd-t is check-eljük)
+old_write = "        if (mShellPid > 0) mTerminalToProcessIOQueue.write(data, offset, count);"
+new_write = "        if (mShellPid > 0 || mExternalPtyFd > 0) mTerminalToProcessIOQueue.write(data, offset, count);"
+if old_write not in src:
+    sys.exit("TerminalSession patch anchor (write) nincs meg")
+src = src.replace(old_write, new_write, 1)
+
+p.write_text(src)
+print(f"[termux] patched: {p}")
+EOF
+fi
+
 echo "[termux] kész:"
 ls -la "${PROJ_DIR}/terminal-emulator"
 ls -la "${PROJ_DIR}/terminal-view"
