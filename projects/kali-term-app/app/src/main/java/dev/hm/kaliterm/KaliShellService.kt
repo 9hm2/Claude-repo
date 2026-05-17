@@ -169,14 +169,22 @@ class KaliShellService : Service() {
             // egy APK-upgrade UTÁN, ha a service nem destroy-olódott. Ezért
             // a sentinel-fájl content-check ha a kritikus usb1/busnum üres,
             // ÚJRA-RUN-oljuk a populate-et.
+            //
+            // SENTINEL-LIST (mindegyik kötelező a cache-hit-hez):
+            //  - usb1/busnum: alap walk_lkl leaf-fix (commit 2de3a10+)
+            //  - usb1/uevent: libudev-discovery fix (commit cd47bdc+)
+            // Ha bármelyik hiányzik / üres, az APK frissebb mint a materialize.
             if (lklProcOsrelease != null) {
-                val sentinel = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
-                val ok = sentinel.exists() && sentinel.length() > 0
+                val sUsbBusnum = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/busnum")
+                val sUevent   = File(rootfs.prootTmpDir, "lkl-sys/bus/usb/devices/usb1/uevent")
+                val ok = sUsbBusnum.exists() && sUsbBusnum.length() > 0
+                      && sUevent.exists()   && sUevent.length()   > 0
                 if (ok) {
-                    KaliInitLog.add("shell-svc", "prepareLklMirror skip — cached osrelease=$lklProcOsrelease (sentinel OK)")
+                    KaliInitLog.add("shell-svc", "prepareLklMirror skip — cache OK (busnum+uevent megvan)")
                     return
                 } else {
-                    KaliInitLog.add("shell-svc", "cache invalid (usb1/busnum üres) — RE-POPULATE")
+                    val why = if (!sUevent.exists() || sUevent.length() == 0L) "uevent hiány" else "busnum hiány"
+                    KaliInitLog.add("shell-svc", "cache invalid ($why) — RE-POPULATE (frissebb APK?)")
                     lklProcOsrelease = null
                 }
             }
@@ -469,6 +477,8 @@ class KaliShellService : Service() {
         dumpFile("usb1/idVendor",    "bus/usb/devices/usb1/idVendor")
         dumpFile("usb1/idProduct",   "bus/usb/devices/usb1/idProduct")
         dumpFile("usb1/descriptors", "bus/usb/devices/usb1/descriptors")
+        dumpFile("usb1/uevent",      "bus/usb/devices/usb1/uevent")
+        dumpFile("usb2/uevent",      "bus/usb/devices/usb2/uevent")
         dumpFile("1-1/busnum",       "bus/usb/devices/1-1/busnum")
         dumpFile("1-1/idVendor",     "bus/usb/devices/1-1/idVendor")
         // /sys/bus/usb/devices/usb1 stub — proot bind később (csak ha LKL
