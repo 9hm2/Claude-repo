@@ -320,11 +320,9 @@ int open(const char *path, int flags, ...)
      * az in-memory buffer-be tesszük, a fd-t magic-namespace-ben adjuk. */
     if (strcmp(path, "/dev/kmsg") == 0) {
         int kfd = kmsg_open_via_lkl();
-        if (kfd >= 0) {
-            SHIM_DBG("[shim open] /dev/kmsg → KMSG magic fd=%d\n", kfd);
-            return kfd;
-        }
-        /* fallback: empty file via memfd */
+        /* UNCONDITIONAL debug — diagnosztikához, hogy lássuk fut-e */
+        fprintf(stderr, "[shim open /dev/kmsg] kmsg_open_via_lkl=%d errno=%d\n", kfd, errno);
+        if (kfd >= 0) return kfd;
         errno = ENOENT;
         return -1;
     }
@@ -803,11 +801,13 @@ int statfs(const char *path, struct statfs *buf)
  * → ugyanaz a szimbólum mint a statfs(). Külön definíció duplicate-symbol
  * linker errort okoz. A statfs() override mindkettőt elkapja. */
 
-/* Constructor — minden indításkor stderr-re log (egyszerű diag). */
+/* Constructor — minden indításkor stderr-re log. UNCONDITIONAL diag,
+ * mert tudnunk kell hogy egyáltalán LD_PRELOAD-olódott a shim. */
 __attribute__((constructor))
 static void shim_init(void)
 {
-    SHIM_DBG("[kali-fuse-shim] LD_PRELOAD aktív (sock=%s)\n", SOCK_PATH);
+    fprintf(stderr, "[kali-fuse-shim] LD_PRELOAD aktív (sock=%s) PID=%d\n",
+            SOCK_PATH, getpid());
 }
 
 /* ────────────────────────────────────────────────────────────────────
