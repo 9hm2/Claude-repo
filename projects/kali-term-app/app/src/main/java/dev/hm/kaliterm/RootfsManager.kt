@@ -55,8 +55,9 @@ class RootfsManager(private val ctx: Context) {
      *    - usbutils + hwdata (full usb.ids) + firmware-realtek
      *    - net-tools, iproute2, kmod, iw, wireless-tools, wpasupplicant
      *    - rfkill, pciutils, util-linux
-     *    - /lib/modules/6.12.0-kaliterm+/ + modules.builtin* */
-    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready-v3")
+     *    - /lib/modules/6.12.0-kaliterm+/ + modules.builtin* + depmod-generált
+     *      modules.builtin.alias.bin → modprobe rtl8xxxu/btusb/ath9k_htc → exit 0 */
+    private val readyMarker: File = File(rootfsDir, ".kaliterm-ready-v4")
 
     /**
      * A proot binary helye — a `nativeLibraryDir`, NEM a `filesDir`.

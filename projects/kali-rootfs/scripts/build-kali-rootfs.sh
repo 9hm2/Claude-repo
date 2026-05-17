@@ -167,10 +167,12 @@ ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
         # APK 100MB GitHub-limit. A user-nek Realtek 2357:011e device-a van;
         # ha más chipset firmware kell, apt install firmware-atheros / firmware-misc-nonfree.
 
-# 8) /lib/modules/<kver>/ kreálás — a kernel-build modules.builtin* fájlokat
-# bemásoljuk + üres modules.dep, modules.alias-t kreálunk. Ez lehetővé teszi
-# a `modprobe rtl8xxxu` típusú parancsokat — modprobe a built-in modulokat
-# is felismeri (modules.builtin-ben szerepelnek) és sikeresen visszatér.
+# 8) /lib/modules/<kver>/ kreálás — a kernel-build modules.builtin* + modules.order
+# + System.map fájlokat bemásoljuk, és a chrootban FUTTATJUK a `depmod`-ot
+# (kmod már installálva a 7-es lépésben). Ez generálja a valódi binary index
+# fájlokat (modules.builtin.alias.bin, modules.dep.bin, modules.symbols.bin),
+# amik nélkül a `modprobe rtl8xxxu` "Module not found"-tal kilép — még akkor
+# is ha a rtl8xxxu.ko a modules.builtin szövegben szerepel.
 #
 # A kernel-build path-t a KERNEL_BUILD_DIR env-en vehetjük át; default
 # a relatíve a kali-rootfs-hez számolva.
@@ -178,21 +180,47 @@ KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$(realpath "${DL_DIR}/../../kernel-build/b
 KVER="${KVER:-6.12.0-kaliterm+}"
 MODDIR="${ROOTFS_DIR}/lib/modules/${KVER}"
 if [[ -f "${KERNEL_BUILD_DIR}/modules.builtin" ]]; then
-    echo "[kali] /lib/modules/${KVER}/ build — modules.builtin* másolása"
+    echo "[kali] /lib/modules/${KVER}/ build — modules.builtin* + modules.order + System.map másolása"
     ${SUDO} mkdir -p "${MODDIR}/kernel"
     ${SUDO} cp -v "${KERNEL_BUILD_DIR}/modules.builtin" "${MODDIR}/"
     [[ -f "${KERNEL_BUILD_DIR}/modules.builtin.modinfo" ]] && \
         ${SUDO} cp -v "${KERNEL_BUILD_DIR}/modules.builtin.modinfo" "${MODDIR}/"
-    # Üres modules.dep, modules.alias — depmod helyettesítő minimal fájlok.
-    # modprobe ezzel built-in modulokra success-szel visszatér.
-    ${SUDO} touch "${MODDIR}/modules.dep" \
-                  "${MODDIR}/modules.alias" \
-                  "${MODDIR}/modules.symbols"
-    # depmod-szerű bin-fájlok (modprobe szereti):
-    ${SUDO} touch "${MODDIR}/modules.dep.bin" \
-                  "${MODDIR}/modules.alias.bin" \
-                  "${MODDIR}/modules.symbols.bin"
+    [[ -f "${KERNEL_BUILD_DIR}/modules.order" ]] && \
+        ${SUDO} cp -v "${KERNEL_BUILD_DIR}/modules.order" "${MODDIR}/"
+    [[ -f "${KERNEL_BUILD_DIR}/System.map" ]] && \
+        ${SUDO} cp -v "${KERNEL_BUILD_DIR}/System.map" "${MODDIR}/"
+
+    # depmod a chroot-belül: System.map-et használja a szimbólum-resolve-hez,
+    # és a modules.builtin.modinfo-ból kinyeri az aliasokat → modules.builtin.alias.bin.
+    # Az -ae jelzi: alias + emit error if symbol-resolve fail (toleráns mód).
+    if [[ -f "${MODDIR}/System.map" ]]; then
+        echo "[kali] depmod ${KVER} futtatás a chrootban (System.map-mel)"
+        ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            depmod -F "/lib/modules/${KVER}/System.map" -a "${KVER}" \
+            || echo "[kali] WARN: depmod hibával végződött, de folytatunk"
+    else
+        echo "[kali] depmod ${KVER} futtatás a chrootban (System.map nélkül)"
+        ${SUDO} chroot "${ROOTFS_DIR}" /usr/bin/env -i \
+            PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            depmod -a "${KVER}" \
+            || echo "[kali] WARN: depmod hibával végződött, de folytatunk"
+    fi
     echo "[kali] /lib/modules/${KVER}/ kész: $(ls -1 "${MODDIR}" | wc -l) fájl"
+    echo "[kali] /lib/modules/${KVER}/ tartalma:"
+    ls -lh "${MODDIR}/" | awk 'NR>1 {print "    " $NF " (" $5 ")"}'
+    # Verifikáció: a modules.builtin tartalmazza-e a rtl8xxxu-t
+    if grep -q 'rtl8xxxu' "${MODDIR}/modules.builtin"; then
+        echo "[kali] verifikáció: ✓ rtl8xxxu a modules.builtin-ben van"
+    else
+        echo "[kali] WARN: rtl8xxxu HIÁNYZIK a modules.builtin-ből!"
+    fi
+    if [[ -f "${MODDIR}/modules.builtin.alias.bin" ]]; then
+        BAS=$(stat -c%s "${MODDIR}/modules.builtin.alias.bin")
+        echo "[kali] verifikáció: ✓ modules.builtin.alias.bin (${BAS} byte)"
+    else
+        echo "[kali] WARN: modules.builtin.alias.bin nem generálódott — modprobe alias-lookup nem fog működni"
+    fi
 else
     echo "[kali] WARN: kernel-build modules.builtin nincs (${KERNEL_BUILD_DIR}) — modprobe will not see built-in mods"
 fi

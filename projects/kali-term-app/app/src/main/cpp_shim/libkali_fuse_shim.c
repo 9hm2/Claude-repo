@@ -339,8 +339,6 @@ int my_open_impl(const char *path, int flags, ...)
      * az in-memory buffer-be tesszük, a fd-t magic-namespace-ben adjuk. */
     if (strcmp(path, "/dev/kmsg") == 0) {
         int kfd = kmsg_open_via_lkl();
-        /* UNCONDITIONAL debug — diagnosztikához, hogy lássuk fut-e */
-        fprintf(stderr, "[shim open /dev/kmsg] kmsg_open_via_lkl=%d errno=%d\n", kfd, errno);
         if (kfd >= 0) return kfd;
         errno = ENOENT;
         return -1;
@@ -411,7 +409,6 @@ int klogctl(int type, char *bufp, int len)
     /* Egyetlen kmsg-snapshot az egész klogctl-streamhez (folyamatosan
      * újra lekérhetjük, de a buffer minden hívásnál friss). */
     int kfd = kmsg_open_via_lkl();
-    fprintf(stderr, "[shim klogctl] type=%d len=%d kfd=%d\n", type, len, kfd);
     if (kfd < 0) { errno = ENOSYS; return -1; }
     struct kmsg_buf *k = get_kmsg(kfd);
     if (!k || !k->data) { free_kmsg(kfd); errno = ENOSYS; return -1; }
@@ -881,13 +878,12 @@ int statfs(const char *path, struct statfs *buf)
  * → ugyanaz a szimbólum mint a statfs(). Külön definíció duplicate-symbol
  * linker errort okoz. A statfs() override mindkettőt elkapja. */
 
-/* Constructor — minden indításkor stderr-re log. UNCONDITIONAL diag,
- * mert tudnunk kell hogy egyáltalán LD_PRELOAD-olódott a shim. */
+/* Constructor — csak DEBUG módban logol (KALITERM_SHIM_DEBUG=1). */
 __attribute__((constructor))
 static void shim_init(void)
 {
-    fprintf(stderr, "[kali-fuse-shim] LD_PRELOAD aktív (sock=%s) PID=%d\n",
-            SOCK_PATH, getpid());
+    SHIM_DBG("[kali-fuse-shim] LD_PRELOAD aktív (sock=%s) PID=%d\n",
+             SOCK_PATH, getpid());
 }
 
 /* ────────────────────────────────────────────────────────────────────
