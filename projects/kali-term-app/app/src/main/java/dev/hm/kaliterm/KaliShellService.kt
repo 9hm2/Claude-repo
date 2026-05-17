@@ -85,6 +85,10 @@ class KaliShellService : Service() {
                 // chrooted `/run/lkl-control.sock`-ra, és az LD_PRELOAD shim
                 // ezen át hív LKL-syscallt.
                 "LKL_CONTROL_SOCK=${File(rootfs.prootTmpDir, "lkl-control.sock").absolutePath}",
+                // PHASE-pure-rootfs: host-injekciós mappa (shim, keyring,
+                // usb.ids, resolv.conf) — a launch.sh bind-mountolja a
+                // megfelelő chrootbeli path-okra. A Kali rootfs SZŰZ marad.
+                "HOST_INJECTIONS_DIR=${rootfs.hostInjectionsDir.absolutePath}",
                 // PROOT_TMP_DIR + TMPDIR — proot kötelezően kér egy writable
                 // temp-mappát a mountpoint-emulation cache-jéhez. Android-on
                 // nincs /tmp, ezért a filesDir alá tesszük (writable+exec).

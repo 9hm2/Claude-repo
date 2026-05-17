@@ -38,6 +38,12 @@ class RootfsManager(private val ctx: Context) {
      *  Android-on nincs `/tmp`, proot enélkül `proot_tmp_dir not set`
      *  hibával hal el. A filesDir alatt writable+executable terület. */
     val prootTmpDir: File = File(ctx.filesDir, "proot-tmp")
+    /** Host-side injection-mappa: a chrooted Kali rendszerbe bind-mountolt
+     *  fájlokat (shim, keyring, usb.ids, resolv.conf) ITT tartjuk, NEM a
+     *  rootfs alatt. Cél: a Kali rootfs SZŰZ marad — `apt upgrade` és minden
+     *  más Debian-művelet tisztán működik, a mi runtime-injekcióink csak
+     *  proot bind-mount-on át jelennek meg a chrootban. */
+    val hostInjectionsDir: File = File(ctx.filesDir, "host-injections")
     /** Marker amit a kicsomagolás végén írunk. */
     private val readyMarker: File = File(rootfsDir, ".kaliterm-ready")
 
@@ -91,9 +97,12 @@ class RootfsManager(private val ctx: Context) {
 
             if (readyMarker.exists()) {
                 Log.i(tag, "rootfs already extracted")
-                // resolv.conf + keyring + shim frissítése akkor is, ha a fa
-                // már ki van bontva — különben a régi (üres/hiányos) verzió
-                // marad, és új APK-build-szel a shim nem frissül.
+                // PHASE-pure-rootfs: a régi (rootfs-modification) APK
+                // után migration — eltávolítjuk az általunk korábban
+                // a rootfs-be írt fájlokat, mostantól csak host-injekciós
+                // bind-mountokon át jelennek meg a chrootban.
+                cleanupOldRootfsInjections()
+                // Most a host-side injekciók írása:
                 writeResolvConf()
                 writeKaliKeyring()
                 writeFuseShim()
@@ -309,6 +318,27 @@ if [ -S "${'$'}{LKL_CONTROL_SOCK}" ]; then
     echo "✓ LKL control-socket: ${'$'}{LKL_CONTROL_SOCK} → /run/lkl-control.sock"
 fi
 
+# PHASE-pure-rootfs: HOST_INJECTIONS-bindok. A Kali rootfs SZŰZ marad,
+# a mi kis kiegészítéseink (shim, keyring, usb.ids, resolv.conf)
+# runtime-ban kerülnek be a chrootba proot bind-mount-on át. Így az
+# apt upgrade és minden más Debian-művelet zavartalanul fut.
+INJECT_ARGS=""
+if [ -d "${'$'}{HOST_INJECTIONS_DIR}" ]; then
+    if [ -f "${'$'}{HOST_INJECTIONS_DIR}/libkali_fuse_shim.so" ]; then
+        INJECT_ARGS="${'$'}{INJECT_ARGS} -b ${'$'}{HOST_INJECTIONS_DIR}/libkali_fuse_shim.so:/usr/lib/libkali_fuse_shim.so"
+    fi
+    if [ -f "${'$'}{HOST_INJECTIONS_DIR}/kali-archive-keyring.gpg" ]; then
+        INJECT_ARGS="${'$'}{INJECT_ARGS} -b ${'$'}{HOST_INJECTIONS_DIR}/kali-archive-keyring.gpg:/etc/apt/trusted.gpg.d/kali-archive-keyring.gpg"
+    fi
+    if [ -f "${'$'}{HOST_INJECTIONS_DIR}/usb.ids" ]; then
+        INJECT_ARGS="${'$'}{INJECT_ARGS} -b ${'$'}{HOST_INJECTIONS_DIR}/usb.ids:/var/lib/usbutils/usb.ids"
+    fi
+    if [ -f "${'$'}{HOST_INJECTIONS_DIR}/resolv.conf" ]; then
+        INJECT_ARGS="${'$'}{INJECT_ARGS} -b ${'$'}{HOST_INJECTIONS_DIR}/resolv.conf:/etc/resolv.conf"
+    fi
+    echo "✓ host-injections bind-mounted (shim, keyring, usb.ids, resolv.conf)"
+fi
+
 # 5) Kali bash indítása proot chroot-on át — Termux PRoot-Distro receptje.
 #
 # A binárisunk most a TERMUX FORK (build-proot.sh-szal letöltve a
@@ -316,13 +346,6 @@ fi
 # és inline tracee-loader-rel). Tartalmazza az Android-szpecifikus
 # kernel-hook patcheket — különben a SECCOMP_MODE_FILTER az upstream
 # proot tracee-jét SIGSYS-szel (signal 31) megöli.
-# Shim sanity-log a launch.sh-ban — látszik a TerminalView-ben.
-if [ -f /usr/lib/libkali_fuse_shim.so ] 2>/dev/null; then
-    echo "✓ FUSE shim ott van (chrooton kívülről nem ellenőrizhető)"
-fi
-ls -la "${'$'}{ROOTFS_DIR}/usr/lib/libkali_fuse_shim.so" 2>/dev/null && \
-    echo "✓ shim host-szinten kiírva" || \
-    echo "✗ shim NINCS host-szinten — writeFuseShim() error?"
 
 echo "─── proot indítása → /bin/bash ───"
 # A LKL_PROC_BINDS dinamikus — `set --`-szal pozícionális argokká tesszük,
@@ -339,8 +362,9 @@ set -- "${'$'}{PROOT}" \
 # /proc /sys /dev mountok — LKL-mirror (ha él) vagy host fallback. A
 # DEV_MOUNT_ARGS tartalmazza a working host /dev/* overlay-eket is.
 # CTRL_SOCK_ARGS az LKL-control-socket bind-mount-ja (Phase 2c.5g).
+# INJECT_ARGS: HOST_INJECTIONS bind-mountok (PHASE-pure-rootfs).
 # shellcheck disable=SC2086
-set -- "${'$'}@" ${'$'}{PROC_MOUNT_ARGS} ${'$'}{SYS_MOUNT_ARGS} ${'$'}{DEV_MOUNT_ARGS} ${'$'}{CTRL_SOCK_ARGS}
+set -- "${'$'}@" ${'$'}{PROC_MOUNT_ARGS} ${'$'}{SYS_MOUNT_ARGS} ${'$'}{DEV_MOUNT_ARGS} ${'$'}{CTRL_SOCK_ARGS} ${'$'}{INJECT_ARGS}
 set -- "${'$'}@" \
     /usr/bin/env -i \
         HOME="${'$'}{USER_HOME}" \
@@ -364,67 +388,86 @@ exec /system/bin/sh
      *  ~700KB (Linux USB ID adatbázis); itt csak egy üres stubot adunk,
      *  hogy a fopen() siker legyen. A user `apt install hwdata` után
      *  a teljes adatbázist kapja meg. */
+    /** PHASE-pure-rootfs migration: az általunk korábban a rootfs-be
+     *  írt fájlokat eltávolítjuk. Mostantól csak host-injekciós bind-mountokon
+     *  át jelennek meg a chrootban. A Kali rootfs SZŰZ marad — apt upgrade
+     *  zavartalanul fut. Idempotens: ha a fájl már nincs, no-op. */
+    private fun cleanupOldRootfsInjections() {
+        val toRemove = listOf(
+            "usr/lib/libkali_fuse_shim.so" to 999_999L,    // mindig töröljük
+            "etc/apt/trusted.gpg.d/kali-archive-keyring.gpg" to 999_999L,
+            "var/lib/usbutils/usb.ids" to 200L,            // csak ha kicsi (= a mi stubunk)
+        )
+        toRemove.forEach { (rel, maxLenForRemoval) ->
+            val f = File(rootfsDir, rel)
+            if (f.exists() && f.length() <= maxLenForRemoval) {
+                if (f.delete()) Log.i(tag, "rootfs cleanup (pure): törölve $rel (${f.length()}B)")
+            }
+        }
+    }
+
+    /** PHASE-pure-rootfs: minimális usb.ids stub a HOST-side
+     *  hostInjectionsDir/usb.ids-ben. A launch.sh proot bind-mountolja a
+     *  chroot /var/lib/usbutils/usb.ids-re. Az aktuális Kali rootfs SZŰZ marad. */
     private fun writeUsbIdsStub() {
         try {
-            val target = File(rootfsDir, "var/lib/usbutils/usb.ids")
-            if (target.exists() && target.length() > 100) return  // van valami nagyobb file, ne írjuk felül
-            target.parentFile?.mkdirs()
+            hostInjectionsDir.mkdirs()
+            val target = File(hostInjectionsDir, "usb.ids")
             target.writeText("# Minimal usb.ids stub — install 'hwdata' for full database\n")
             Os.chmod(target.absolutePath, "644".toInt(8))
-            Log.i(tag, "usb.ids stub kiírva: ${target.absolutePath}")
+            Log.i(tag, "usb.ids stub host-side: ${target.absolutePath}")
         } catch (t: Throwable) {
             Log.w(tag, "writeUsbIdsStub failed: ${t.message}")
         }
     }
 
-    /** libkali_fuse_shim.so beágyazása a chrooted /usr/lib-be, LD_PRELOAD-ra
-     *  készen. Az APK assets/rootfs/libkali_fuse_shim.so-jét másoljuk. */
+    /** PHASE-pure-rootfs: libkali_fuse_shim.so a HOST-side hostInjectionsDir-be.
+     *  Bind-mountoljuk a chroot /usr/lib/libkali_fuse_shim.so-ra. Rootfs SZŰZ. */
     private fun writeFuseShim() {
         try {
-            val target = File(rootfsDir, "usr/lib/libkali_fuse_shim.so")
-            target.parentFile?.mkdirs()
+            hostInjectionsDir.mkdirs()
+            val target = File(hostInjectionsDir, "libkali_fuse_shim.so")
             ctx.assets.open("rootfs/libkali_fuse_shim.so").use { input ->
                 FileOutputStream(target).use { input.copyTo(it) }
             }
             Os.chmod(target.absolutePath, "755".toInt(8))
-            Log.i(tag, "FUSE shim kiírva: ${target.absolutePath} (${target.length()}B)")
+            Log.i(tag, "FUSE shim host-side: ${target.absolutePath} (${target.length()}B)")
         } catch (t: Throwable) {
             Log.w(tag, "writeFuseShim failed: ${t.message}")
         }
     }
 
-    /** Kali archive GPG keyring beágyazása a chrooted /etc/apt/trusted.gpg.d/-be.
-     *  Az APK assets/rootfs/kali-archive-keyring.gpg-jét másoljuk. Idempotens. */
+    /** PHASE-pure-rootfs: Kali archive GPG keyring a HOST-side. A launch.sh
+     *  bind-mountolja a chroot /etc/apt/trusted.gpg.d/kali-archive-keyring.gpg-re. */
     private fun writeKaliKeyring() {
         try {
-            val target = File(rootfsDir, "etc/apt/trusted.gpg.d/kali-archive-keyring.gpg")
-            target.parentFile?.mkdirs()
+            hostInjectionsDir.mkdirs()
+            val target = File(hostInjectionsDir, "kali-archive-keyring.gpg")
             ctx.assets.open("rootfs/kali-archive-keyring.gpg").use { input ->
                 FileOutputStream(target).use { input.copyTo(it) }
             }
-            Os.chmod(target.absolutePath, "644".toInt(8))  // 0644 rwx-perm
-            Log.i(tag, "Kali keyring kiírva: ${target.absolutePath} (${target.length()}B)")
+            Os.chmod(target.absolutePath, "644".toInt(8))
+            Log.i(tag, "Kali keyring host-side: ${target.absolutePath} (${target.length()}B)")
         } catch (t: Throwable) {
             Log.w(tag, "writeKaliKeyring failed: ${t.message}")
         }
     }
 
-    /** Public DNS resolver-bejegyzések a chrooted Kali /etc/resolv.conf-ba. */
+    /** PHASE-pure-rootfs: resolv.conf a HOST-side. A launch.sh bind-mountolja
+     *  a chroot /etc/resolv.conf-ra. A Kali rootfs symlinkje (systemd-resolved)
+     *  érintetlen marad. */
     private fun writeResolvConf() {
         try {
-            val resolvConf = File(rootfsDir, "etc/resolv.conf")
-            resolvConf.parentFile?.mkdirs()
-            // resolv.conf gyakran egy symlink (systemd-resolved-stúb)
-            // → előbb töröljük, hogy ne a target-et írjuk át véletlenül.
-            if (resolvConf.exists() || java.nio.file.Files.isSymbolicLink(resolvConf.toPath())) {
-                resolvConf.delete()
-            }
-            resolvConf.writeText(
+            hostInjectionsDir.mkdirs()
+            val target = File(hostInjectionsDir, "resolv.conf")
+            target.writeText(
                 "# kaliterm — auto-generated\n" +
                 "nameserver 1.1.1.1\n" +
                 "nameserver 8.8.8.8\n" +
                 "nameserver 9.9.9.9\n"
             )
+            Os.chmod(target.absolutePath, "644".toInt(8))
+            Log.i(tag, "resolv.conf host-side: ${target.absolutePath}")
         } catch (t: Throwable) {
             Log.w(tag, "writeResolvConf failed: ${t.message}")
         }
