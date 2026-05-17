@@ -47,6 +47,26 @@ rsync -a --delete \
     --exclude='.tmp_versions/' --exclude='Module.symvers' \
     "${CACHE_DIR}/" "${DEST_DIR}/"
 
+# Toolchain-kompatibilitás: az upstream Makefile GCC-13-specifikus warning-
+# disable flag-eket ad hozzá unconditionally, amit a NDK clang `-Werror`
+# módja unknown-warning-optionnek vesz → fail. Wrappel-jük cc-option-be,
+# ami csak akkor ad hozzá flag-et ha a compiler ismeri.
+M="${DEST_DIR}/Makefile"
+# Egyik régen-existed flag-et nyitva hagyjuk; a GCC-13 specifikus
+# csoportot meg cc-option-be wrappel-jük.
+sed -i -E \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-enum-int-mismatch$/EXTRA_CFLAGS += $(call cc-option,-Wno-enum-int-mismatch)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-stringop-overread$/EXTRA_CFLAGS += $(call cc-option,-Wno-stringop-overread)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-enum-conversion$/EXTRA_CFLAGS += $(call cc-option,-Wno-enum-conversion)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-int-in-bool-context$/EXTRA_CFLAGS += $(call cc-option,-Wno-int-in-bool-context)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-missing-prototypes$/EXTRA_CFLAGS += $(call cc-option,-Wno-missing-prototypes)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-missing-declarations$/EXTRA_CFLAGS += $(call cc-option,-Wno-missing-declarations)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-empty-body$/EXTRA_CFLAGS += $(call cc-option,-Wno-empty-body)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-address$/EXTRA_CFLAGS += $(call cc-option,-Wno-address)/' \
+    -e 's/^EXTRA_CFLAGS \+= -Wno-cast-function-type$/EXTRA_CFLAGS += $(call cc-option,-Wno-cast-function-type)/' \
+    "$M"
+echo "[rtl8812au] Makefile cc-option wrap: $(grep -c 'cc-option' "$M") flag-et patched"
+
 # Idempotens marker — a következő build-script-futás látja hogy már be van másolva.
 date -u +'rtl8812au integrated %Y-%m-%dT%H:%M:%SZ' > "${DEST_DIR}/.kaliterm-imported"
 
