@@ -52,6 +52,13 @@ rsync -a --delete \
 # módja unknown-warning-optionnek vesz → fail. Wrappel-jük cc-option-be,
 # ami csak akkor ad hozzá flag-et ha a compiler ismeri.
 M="${DEST_DIR}/Makefile"
+# Szimbólumütközés-fix: a kernel `lib/crypto/aes.c` exportál `aes_encrypt`-et
+# is, és a rtl8812au saját `core/crypto/aes-internal-enc.c`-je is `aes_encrypt`-ként
+# definiálja → in-tree-build duplicate-symbol link-error. -D macro-szinten
+# globálisan renamel-jük a rtl8812au-belüli hívásokra.
+echo 'EXTRA_CFLAGS += -Daes_encrypt=rtl8812au_aes_encrypt' >> "$M"
+echo "[rtl8812au] Makefile aes_encrypt → rtl8812au_aes_encrypt rename hozzáadva"
+
 # Egyik régen-existed flag-et nyitva hagyjuk; a GCC-13 specifikus
 # csoportot meg cc-option-be wrappel-jük.
 sed -i -E \
