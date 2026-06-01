@@ -31,7 +31,11 @@ PROOT_VERSION="${PROOT_VERSION:-5.4.0}"
 TALLOC_VERSION="${TALLOC_VERSION:-2.4.2}"
 
 CC="${NDK_BIN}/${TARGET}-clang"
-LD="${CC}"
+# A loader linkelése a proot GNUmakefile-ben `-Wl,...,--rosegment`-et használ
+# (LOADER_LDFLAGS), amit csak az lld ismer. Az NDK alapértelmezett linkere a
+# régi bfd `ld` (binutils 4.9.x), ami "unrecognized option '--rosegment'"-tel
+# elhasal. Ezért minden link-lépést (loader + fő proot) lld-vel végeztetünk.
+LD="${CC} -fuse-ld=lld"
 AR="${NDK_BIN}/llvm-ar"
 # OBJCOPY + OBJDUMP: a proot GNUmakefile a loader-wrapped.o-hoz az
 # `objdump -f cli/cli.o` outputból derivátja a formátumot és arch-ot,
@@ -308,7 +312,7 @@ make -C "${PROOT_SRC}" -j"$(nproc)" \
     STRIP="${NDK_BIN}/llvm-strip" \
     HOST_CC="cc" \
     CFLAGS="-O2 ${TALLOC_INCLUDE_FLAG} -DGIT_VERSION=\"v${PROOT_VERSION}\" -Wno-error=implicit-function-declaration -Wno-error=incompatible-function-pointer-types -Wno-error=int-conversion" \
-    LDFLAGS="-L${TALLOC_OUT} -ltalloc -static-libgcc" \
+    LDFLAGS="-L${TALLOC_OUT} -ltalloc -static-libgcc -Wl,-z,noexecstack" \
     proot
 
 PROOT_BIN="${PROOT_SRC}/proot"
