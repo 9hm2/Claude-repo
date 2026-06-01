@@ -79,8 +79,15 @@ repack() {
   # ("Operation not permitted") → kihagyjuk. Futásidőben úgyis a proot köti be a
   # host /dev-jét (-b /dev), a /dev mount-pontot pedig a ProotInstaller hozza
   # létre. A leading prefixet (pl. kali-arm64/dev/…) is lefedjük.
-  local ex=( --no-same-owner --exclude='dev/*'
-             --exclude='./dev/*' --exclude='*/dev/*' )
+  #
+  # --delay-directory-restore: néhány rootfs írásvédett könyvtárakat tartalmaz
+  # (pl. /etc/ca-certificates/extracted/cadir 0555 módban). Ha a tar a könyvtár
+  # jogait AZONNAL visszaállítja, nem-root userként már nem tud bele írni
+  # ("Cannot open / create symlink: Permission denied"). Ez a flag a könyvtár-
+  # jogokat a kibontás VÉGÉRE halasztja, így közben írhatók maradnak, a végső
+  # (helyes) módot pedig a repack megőrzi.
+  local ex=( --no-same-owner --delay-directory-restore
+             --exclude='dev/*' --exclude='./dev/*' --exclude='*/dev/*' )
   case "${decomp}" in
     gz)  tar -C "${rootfs}" "${ex[@]}" -xzf "${raw}" ;;
     xz)  tar -C "${rootfs}" "${ex[@]}" -xJf "${raw}" ;;
