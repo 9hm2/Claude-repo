@@ -299,6 +299,14 @@ EOF
 # az első OBJECTS += elé (continuation \ miatt nem fűzhetjük utána).
 sed -i.bak '/^OBJECTS += \\$/i OBJECTS += extension/python/python_stub.o' "${PROOT_MAKEFILE}"
 
+# A LOADER_LDFLAGS `--rosegment`-et ad át (`...,-Ttext=...,--rosegment,-z,...`),
+# ami egy gold/bfd-specifikus opció. Az lld-ben a read-only szegmens az
+# ALAPÉRTELMEZETT (a kapcsoló neve ott `--no-rosegment` lenne), így az lld a
+# pozitív `--rosegment`-et "unknown argument"-ként eldobja; a régi NDK bfd ld
+# pedig "unrecognized option"-nel. Mivel lld-vel linkelünk és az úgyis külön
+# rodata-szegmenst gyárt, egyszerűen kivesszük a flaget — funkcionálisan azonos.
+sed -i.bak 's/,--rosegment//g' "${PROOT_MAKEFILE}"
+
 echo "[build-proot] make -C ${PROOT_SRC} (NDK cross-compile)"
 # A Termux fork néhány extension-ja (ashmem_memfd, fake_id0) missing-include-okat
 # tartalmaz amik NDK clang 18+ strict-mode-on (-Werror=implicit-function-declaration)
