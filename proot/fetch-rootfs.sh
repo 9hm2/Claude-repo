@@ -74,11 +74,18 @@ repack() {
   curl -fL --retry 4 --retry-delay 2 -o "${raw}" "${url}"
   local rootfs="${TMP}/rootfs"
   rm -rf "${rootfs}"; mkdir -p "${rootfs}"
+  # A disztró-rootfs-ek device node-okat tartalmaznak a /dev alatt (pl. Kali:
+  # dev/null, dev/console…). Ezeket nem-root userként a tar nem tudja mknod-olni
+  # ("Operation not permitted") → kihagyjuk. Futásidőben úgyis a proot köti be a
+  # host /dev-jét (-b /dev), a /dev mount-pontot pedig a ProotInstaller hozza
+  # létre. A leading prefixet (pl. kali-arm64/dev/…) is lefedjük.
+  local ex=( --no-same-owner --exclude='dev/*'
+             --exclude='./dev/*' --exclude='*/dev/*' )
   case "${decomp}" in
-    gz)  tar -C "${rootfs}" -xzf "${raw}" ;;
-    xz)  tar -C "${rootfs}" -xJf "${raw}" ;;
-    zst) tar -C "${rootfs}" --use-compress-program=unzstd -xf "${raw}" ;;
-    *)   tar -C "${rootfs}" -xf "${raw}" ;;
+    gz)  tar -C "${rootfs}" "${ex[@]}" -xzf "${raw}" ;;
+    xz)  tar -C "${rootfs}" "${ex[@]}" -xJf "${raw}" ;;
+    zst) tar -C "${rootfs}" "${ex[@]}" --use-compress-program=unzstd -xf "${raw}" ;;
+    *)   tar -C "${rootfs}" "${ex[@]}" -xf "${raw}" ;;
   esac
   # Néhány bootstrap (Arch x86_64) egy extra felső szintű könyvtárba bont
   # (root.x86_64/). Ha pontosan egy dir van és nincs /etc a tetején, lépjünk be.
